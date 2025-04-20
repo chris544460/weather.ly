@@ -209,9 +209,10 @@ final class WeatherService {
         struct HourlyResp: Decodable {
             struct Hourly: Decodable {
                 let time: [Date]
-                let temperature_2m: [Double]
-                let relative_humidity_2m: [Double]?
-                let precipitation_probability: [Double]?
+                // individual points can be null, so use `[Double?]`
+                let temperature_2m: [Double?]
+                let relative_humidity_2m: [Double?]?
+                let precipitation_probability: [Double?]?
             }
             let hourly: Hourly
         }
@@ -235,15 +236,22 @@ final class WeatherService {
             }())
             .map { resp -> [HourlyForecast] in
                 let h = resp.hourly
-                let count = h.time.count
+                let count = min(h.time.count, h.temperature_2m.count)
                 var out: [HourlyForecast] = []
+
                 for i in 0..<count {
+                    // If the temperature is null, skip this hour
+                    guard let temp = h.temperature_2m[i] else { continue }
+
+                    let humidity = h.relative_humidity_2m?[safe: i] ?? nil
+                    let precip   = h.precipitation_probability?[safe: i] ?? nil
+
                     out.append(
                         HourlyForecast(
                             time: h.time[i],
-                            temperature: h.temperature_2m[i],
-                            humidity: h.relative_humidity_2m?[safe: i] ?? 0,
-                            precipProb: h.precipitation_probability?[safe: i] ?? 0
+                            temperature: temp,
+                            humidity: humidity ?? 0,
+                            precipProb: precip ?? 0
                         )
                     )
                 }
