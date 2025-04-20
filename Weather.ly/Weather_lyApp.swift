@@ -114,9 +114,12 @@ struct HourlyForecast: Identifiable, Codable, Hashable {
 }
 /// Continuous block where every hour meets the user’s criteria
 struct GoodWindow: Identifiable, Hashable {
-    let id   = UUID()
-    let from : Date
-    let to   : Date
+    let id          = UUID()
+    let from        : Date
+    let to          : Date
+    let minTemp     : Double   // stored in °C
+    let maxTemp     : Double
+    let maxHumidity : Double
 }
 
 /// Wrapper used for navigation so we know which city the daily forecast belongs to
@@ -337,7 +340,22 @@ struct CalendarView: View {
                         }
                     } else {
                         ForEach(goodWindows.prefix(6)) { w in
-                            Text("\(dateFmt.string(from: w.from)) → \(dateFmt.string(from: w.to))")
+                            NavigationLink(value: w) {
+                                HStack {
+                                    Text("\(dateFmt.string(from: w.from)) → \(dateFmt.string(from: w.to))")
+                                    Spacer()
+                                    // right‑aligned stats
+                                    let minT = viewModel.useCelsius ? w.minTemp : w.minTemp * 9/5 + 32
+                                    let maxT = viewModel.useCelsius ? w.maxTemp : w.maxTemp * 9/5 + 32
+                                    let unit = viewModel.useCelsius ? "°C" : "°F"
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("\(Int(minT))–\(Int(maxT))\(unit)")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                        Text("≤\(Int(w.maxHumidity)) % RH")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -405,36 +423,50 @@ struct CalendarView: View {
             DayDetailView(selection: sel)
                 .environmentObject(viewModel)
         }
+        .navigationDestination(for: GoodWindow.self) { w in
+            GoodWindowDetailView(city: city, window: w)
+                .environmentObject(viewModel)
+        }
     }
 
     // MARK: - Good window detection
     private func computeGoodWindows(from hours: [HourlyForecast]) -> [GoodWindow] {
         guard !hours.isEmpty else { return [] }
-        let crit = self.viewModel.criteria
+        let c  = viewModel.criteria
+        let toC = { self.viewModel.useCelsius ? $0 : ($0 - 32) * 5.0 / 9.0 }
 
-        func matches(_ h: HourlyForecast) -> Bool {
-            let t = viewModel.useCelsius ? h.temperature : h.temperature * 9/5 + 32
-            let tOK = t >= crit.tempMin && t <= crit.tempMax
-            let hOK = h.humidity <= crit.humidityMax
-            let rOK = crit.precipitationAllowed || h.precipProb < 20
-            return tOK && hOK && rOK
+        // hour matches criteria?
+        func ok(_ h: HourlyForecast) -> Bool {
+            let tC = toC(h.temperature)
+            return tC >= c.tempMin && tC <= c.tempMax &&
+                   h.humidity <= c.humidityMax &&
+                   (c.precipitationAllowed || h.precipProb < 20)
         }
 
-        var result: [GoodWindow] = []
-        var start: Date?
-        var prev: Date?
+        var out: [GoodWindow] = []
+        var start: Int? = nil
 
-        for h in hours {
-            if matches(h) {
-                if start == nil { start = h.time }
+        for (i,h) in hours.enumerated() {
+            if ok(h) {
+                if start == nil { start = i }
             } else if let s = start {
-                result.append(GoodWindow(from: s, to: prev ?? s))
+                out.append(buildWindow(from: Array(hours[s..<i])))
                 start = nil
             }
-            prev = h.time
         }
-        if let s = start { result.append(GoodWindow(from: s, to: prev ?? s)) }
-        return result
+        if let s = start { out.append(buildWindow(from: Array(hours[s...]))) }
+        return out
+    }
+
+    private func buildWindow(from slice: [HourlyForecast]) -> GoodWindow {
+        let tempsC = slice.map { viewModel.useCelsius ? $0.temperature : ($0.temperature - 32) * 5 / 9 }
+        return GoodWindow(
+            from: slice.first!.time,
+            to:   slice.last!.time,
+            minTemp: tempsC.min() ?? 0,
+            maxTemp: tempsC.max() ?? 0,
+            maxHumidity: slice.map(\.humidity).max() ?? 0
+        )
     }
 
     private var dateFmt: DateFormatter {
@@ -518,6 +550,63 @@ struct DayDetailView: View {
         df.dateFormat = "HH:mm"
         return df
     }
+}
+
+struct GoodWindowDetailView: View {
+    @EnvironmentObject var viewModel: AppViewModel
+    let city: City
+    let window: GoodWindow
+
+    @State private var hours: [HourlyForecast] = []
+    @State private var cans  = Set<AnyCancellable>()
+    @State private var showSettings = false
+
+    var body: some View {
+        List {
+            Section(header: Text(title).font(.headline)) {
+                ForEach(filteredHours()) { h in
+                    HStack {
+                        Text(timeFmt.string(from: h.time))
+                            .frame(width:55,alignment:.leading)
+                        Spacer()
+                        let shown = viewModel.useCelsius ? h.temperature : h.temperature*9/5+32
+                        let unit  = viewModel.useCelsius ? "°C":"°F"
+                        Text("\(Int(shown))\(unit)")
+                            .frame(width:55,alignment:.trailing)
+                        Spacer()
+                        Text("\(Int(h.humidity)) %")
+                            .frame(width:45,alignment:.trailing)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(Int(h.precipProb)) %")
+                            .frame(width:45,alignment:.trailing)
+                            .foregroundColor(.blue)
+                    }
+                }
+            }
+            Button("Change criteria") { showSettings = true }
+                .frame(maxWidth:.infinity,alignment:.center)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView().environmentObject(viewModel)
+        }
+        .onAppear {
+            viewModel.weatherService.fetchHourly(for: city)
+                .receive(on: DispatchQueue.main)
+                .catch { _ in Just([]) }
+                .sink { hours = $0 }
+                .store(in: &cans)
+        }
+    }
+
+    private func filteredHours() -> [HourlyForecast] {
+        hours.filter { $0.time >= window.from && $0.time <= window.to }
+    }
+    private var title: String {
+        let df=DateFormatter(); df.dateFormat="MMM d, HH:mm"
+        return "\(df.string(from: window.from)) → \(df.string(from: window.to))"
+    }
+    private var timeFmt: DateFormatter { let d=DateFormatter(); d.dateFormat="HH:mm"; return d }
 }
 
 // 4. Add City View
