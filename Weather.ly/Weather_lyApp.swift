@@ -5,6 +5,7 @@
 //  Created 2025‑04‑19
 //
 
+import Foundation
 import SwiftUI
 import Combine
 
@@ -38,10 +39,46 @@ final class AppViewModel: ObservableObject {
     let weatherService = WeatherService()
     var cancellables   = Set<AnyCancellable>()
 
-    func addCity(_ city: City) { cities.append(city) }
+    func addCity(_ city: City) {
+        cities.append(city)
+        saveCities()
+    }
 
     func fetchForecasts(for city: City) -> AnyPublisher<[DailyForecast], Error> {
         weatherService.fetchForecast(for: city)
+    }
+
+    // MARK: - Persistence (UserDefaults JSON)
+    private let citiesKey    = "savedCities"
+    private let criteriaKey  = "savedCriteria"
+
+    init() {
+        loadCities()
+        loadCriteria()
+    }
+
+    private func saveCities() {
+        if let data = try? JSONEncoder().encode(cities) {
+            UserDefaults.standard.set(data, forKey: citiesKey)
+        }
+    }
+
+    private func loadCities() {
+        guard let data = UserDefaults.standard.data(forKey: citiesKey),
+              let decoded = try? JSONDecoder().decode([City].self, from: data) else { return }
+        cities = decoded
+    }
+
+    func saveCriteria() {
+        if let data = try? JSONEncoder().encode(criteria) {
+            UserDefaults.standard.set(data, forKey: criteriaKey)
+        }
+    }
+
+    private func loadCriteria() {
+        guard let data = UserDefaults.standard.data(forKey: criteriaKey),
+              let decoded = try? JSONDecoder().decode(DayCriteria.self, from: data) else { return }
+        criteria = decoded
     }
 }
 
@@ -366,6 +403,9 @@ struct SettingsView: View {
 
                 Toggle("Allow Precipitation",
                        isOn: $viewModel.criteria.precipitationAllowed)
+                    .onChange(of: viewModel.criteria.precipitationAllowed) { _ in
+                        viewModel.saveCriteria()
+                    }
             }
 
             Section("Units") {
@@ -397,6 +437,7 @@ struct SettingsView: View {
             viewModel.criteria.tempMin = viewModel.criteria.tempMin * 9 / 5 + 32
             viewModel.criteria.tempMax = viewModel.criteria.tempMax * 9 / 5 + 32
         }
+        viewModel.saveCriteria()
     }
 }
 
@@ -443,18 +484,21 @@ private struct ValuePickerSheet: View {
                            set: { new in
                                tempValue = new
                                viewModel.criteria.tempMin = new
+                               viewModel.saveCriteria()
                            })
         case .maxTemp:
             return Binding(get: { tempValue },
                            set: { new in
                                tempValue = new
                                viewModel.criteria.tempMax = new
+                               viewModel.saveCriteria()
                            })
         case .humidity:
             return Binding(get: { humidityValue },
                            set: { new in
                                humidityValue = new
                                viewModel.criteria.humidityMax = new
+                               viewModel.saveCriteria()
                            })
         }
     }
