@@ -95,6 +95,7 @@ final class AppViewModel: ObservableObject {
         loadCities()
         loadCriteria()
         loadWindows()
+        purgeExpiredWindows()
         requestNotificationPermission()
     }
 
@@ -199,7 +200,7 @@ final class AppViewModel: ObservableObject {
         criteria = decoded
     }
 
-    private func saveWindows() {
+    func saveWindows() {
         if let data = try? JSONEncoder().encode(cachedWindows) {
             UserDefaults.standard.set(data, forKey: AppViewModel.windowsKey)
         }
@@ -211,10 +212,28 @@ final class AppViewModel: ObservableObject {
         cachedWindows = decoded
     }
 
+    /// Delete any windows whose end‑time has passed and clear their alerts
+    private func purgeExpiredWindows() {
+        let now = Date()
+        var toRemove: [String] = []
+        for (cid, _) in cachedWindows {
+            cachedWindows[cid]?.removeAll {
+                if $0.to < now {
+                    toRemove.append("win-\(cid)-\($0.id)")
+                    return true
+                }
+                return false
+            }
+        }
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: toRemove)
+    }
+
     
 
 
     func cacheWindows(for city: City, windows: [GoodWindow]) {
+        purgeExpiredWindows()
         cachedWindows[city.id] = windows
         saveWindows()
         scheduleNotifications(for: city, windows: windows)
@@ -598,19 +617,32 @@ struct CalendarView: View {
                     // 1. Compute fresh windows from latest hourly data
                     let fresh = computeGoodWindows(from: hrs)
 
-                    // 2. Merge with any persisted windows to keep plan / skipped flags
+                    // ---- 2. Merge with persisted windows, preserving plan / skip ----
                     let previous = viewModel.cachedWindows[city.id] ?? []
-                    let merged: [GoodWindow] = fresh.map { new in
-                        if let old = previous.first(where: {
-                            abs($0.from.timeIntervalSince(new.from)) < 60 &&
-                            abs($0.to.timeIntervalSince(new.to))   < 60
-                        }) {
-                            var n = new
-                            n.plan    = old.plan
-                            n.skipped = old.skipped
-                            return n
+ 
+                    func contains(_ big: GoodWindow, _ small: GoodWindow) -> Bool {
+                        big.from <= small.from && big.to >= small.to
+                    }
+                    func sameRange(_ a: GoodWindow, _ b: GoodWindow) -> Bool {
+                        abs(a.from.timeIntervalSince(b.from)) < 60 &&
+                        abs(a.to.timeIntervalSince(b.to))   < 60
+                    }
+ 
+                    var merged = fresh
+ 
+                    // copy plan/skip flags when the old window is contained in (or equal to) the new one
+                    for i in merged.indices {
+                        if let old = previous.first(where: { contains(merged[i], $0) || sameRange(merged[i], $0) }) {
+                            merged[i].plan    = old.plan
+                            merged[i].skipped = old.skipped
                         }
-                        return new
+                    }
+ 
+                    // bring along old planned/skipped windows that are no longer matched
+                    for old in previous where
+                        (old.plan != nil || old.skipped) &&
+                        !merged.contains(where: { contains($0, old) || sameRange($0, old) }) {
+                        merged.append(old)
                     }
 
                     // 3. Update UI and persist
