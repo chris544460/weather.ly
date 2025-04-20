@@ -32,6 +32,8 @@ final class AppViewModel: ObservableObject {
     @Published var cities: [City]          = []
     @Published var navigationPath          = NavigationPath()
     @Published var criteria                = DayCriteria()
+    /// true = Celsius, false = Fahrenheit
+    @Published var useCelsius: Bool = false
 
     let weatherService = WeatherService()
     var cancellables   = Set<AnyCancellable>()
@@ -206,7 +208,9 @@ struct CalendarView: View {
                     HStack {
                         Text(f.date, style: .date)
                         Spacer()
-                        Text("\(Int(f.temperature))°")
+                        let shownTemp = viewModel.useCelsius ? f.temperature
+                                                             : f.temperature * 9/5 + 32
+                        Text("\(Int(shownTemp))°")
                     }
                 }
                 .listRowBackground(f.isGoodDay ? Color.green.opacity(0.25) : Color.clear)
@@ -227,7 +231,9 @@ struct CalendarView: View {
                     forecasts = data
                         .map { day -> DailyForecast in
                             var d = day
-                            let tempOK  = d.temperature >= crit.tempMin && d.temperature <= crit.tempMax
+                            let forecastTemp = viewModel.useCelsius ? d.temperature
+                                                                    : d.temperature * 9/5 + 32
+                            let tempOK = forecastTemp >= crit.tempMin && forecastTemp <= crit.tempMax
                             let humidOK = d.humidity   <= crit.humidityMax
                             let rainOK  = crit.precipitationAllowed || d.precipitationProbability < 20
                             d.isGoodDay = tempOK && humidOK && rainOK
@@ -248,12 +254,16 @@ struct CalendarView: View {
 
 // 3. Day Detail View
 struct DayDetailView: View {
+    @EnvironmentObject var viewModel: AppViewModel
     let forecast: DailyForecast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(forecast.date, style: .date).font(.title)
-            Text("Avg Temp: \(Int(forecast.temperature)) °F")
+            let shownTemp = viewModel.useCelsius ? forecast.temperature
+                                                 : forecast.temperature * 9/5 + 32
+            let unit = viewModel.useCelsius ? "°C" : "°F"
+            Text("Avg Temp: \(Int(shownTemp))\(unit)")
             Text("Humidity: \(Int(forecast.humidity)) %")
             Text("Precip Prob: \(Int(forecast.precipitationProbability)) %")
         }
@@ -307,30 +317,183 @@ struct AddCityView: View {
     }
 }
 
-// 5. Settings View (criteria – not wired into UI yet)
+// 5. Settings View – clean rows + modal wheel pickers
 struct SettingsView: View {
     @EnvironmentObject var viewModel: AppViewModel
+
+    // Which picker is currently shown
+    @State private var activePicker: PickerKind?
+    enum PickerKind { case minTemp, maxTemp, humidity }
 
     var body: some View {
         Form {
             Section("Day Criteria") {
-                HStack {
-                    Text("Min Temp")
-                    Spacer()
-                    TextField("Min", value: $viewModel.criteria.tempMin,
-                              formatter: NumberFormatter())
-                        .keyboardType(.decimalPad).frame(width: 60)
+                // ---- Min Temp Row
+                Button {
+                    activePicker = .minTemp
+                } label: {
+                    HStack {
+                        Text("Min Temp")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.tempMin))°")
+                            .foregroundColor(.secondary)
+                    }
                 }
-                HStack {
-                    Text("Max Temp")
-                    Spacer()
-                    TextField("Max", value: $viewModel.criteria.tempMax,
-                              formatter: NumberFormatter())
-                        .keyboardType(.decimalPad).frame(width: 60)
+
+                // ---- Max Temp Row
+                Button {
+                    activePicker = .maxTemp
+                } label: {
+                    HStack {
+                        Text("Max Temp")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.tempMax))°")
+                            .foregroundColor(.secondary)
+                    }
                 }
-                Toggle("Allow Precipitation", isOn: $viewModel.criteria.precipitationAllowed)
+
+                // ---- Max Humidity Row
+                Button {
+                    activePicker = .humidity
+                } label: {
+                    HStack {
+                        Text("Max Humidity %")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.humidityMax)) %")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Toggle("Allow Precipitation",
+                       isOn: $viewModel.criteria.precipitationAllowed)
+            }
+
+            Section("Units") {
+                Picker("Temperature Units", selection: $viewModel.useCelsius) {
+                    Text("°C").tag(true)
+                    Text("°F").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: viewModel.useCelsius) { newIsCelsius in
+                    convertCriteria(toCelsius: newIsCelsius)
+                }
             }
         }
         .navigationTitle("Settings")
+        // ---------- modal sheet ----------
+        .sheet(item: $activePicker) { kind in
+            ValuePickerSheet(kind: kind)
+                .environmentObject(viewModel)
+        }
     }
+
+    // MARK: - Helpers
+    /// Convert existing stored temps when user toggles unit segment
+    private func convertCriteria(toCelsius: Bool) {
+        if toCelsius {
+            viewModel.criteria.tempMin = (viewModel.criteria.tempMin - 32) * 5 / 9
+            viewModel.criteria.tempMax = (viewModel.criteria.tempMax - 32) * 5 / 9
+        } else {
+            viewModel.criteria.tempMin = viewModel.criteria.tempMin * 9 / 5 + 32
+            viewModel.criteria.tempMax = viewModel.criteria.tempMax * 9 / 5 + 32
+        }
+    }
+}
+
+// MARK: ValuePickerSheet – wheel picker for one value
+private struct ValuePickerSheet: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var viewModel: AppViewModel
+    let kind: SettingsView.PickerKind
+
+    @State private var tempValue: Double = 0
+    @State private var humidityValue: Double = 0
+
+    var body: some View {
+        NavigationStack {
+            VStack {
+                Picker("", selection: binding) {
+                    ForEach(range(), id: \.self) { v in
+                        Text(label(for: v)).tag(v)
+                    }
+                }
+                .pickerStyle(.wheel)
+            }
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .onAppear {
+                switch kind {
+                case .minTemp:    tempValue = viewModel.criteria.tempMin
+                case .maxTemp:    tempValue = viewModel.criteria.tempMax
+                case .humidity:   humidityValue = viewModel.criteria.humidityMax
+                }
+            }
+        }
+    }
+
+    // Binding to the correct value
+    private var binding: Binding<Double> {
+        switch kind {
+        case .minTemp:
+            return Binding(get: { tempValue },
+                           set: { new in
+                               tempValue = new
+                               viewModel.criteria.tempMin = new
+                           })
+        case .maxTemp:
+            return Binding(get: { tempValue },
+                           set: { new in
+                               tempValue = new
+                               viewModel.criteria.tempMax = new
+                           })
+        case .humidity:
+            return Binding(get: { humidityValue },
+                           set: { new in
+                               humidityValue = new
+                               viewModel.criteria.humidityMax = new
+                           })
+        }
+    }
+
+    // Display label for picker row
+    private func label(for v: Double) -> String {
+        switch kind {
+        case .humidity:
+            return "\(Int(v)) %"
+        default:
+            return "\(Int(v))°"
+        }
+    }
+
+    // Title text
+    private var title: String {
+        switch kind {
+        case .minTemp:  return "Min Temp"
+        case .maxTemp:  return "Max Temp"
+        case .humidity: return "Max Humidity %"
+        }
+    }
+
+    // Value ranges
+    private func range() -> [Double] {
+        switch kind {
+        case .humidity:
+            return Array(0...100).map { Double($0) }
+        default:
+            if viewModel.useCelsius {
+                return Array(-20...40).map { Double($0) }
+            } else {
+                return Array(-4...104).map { Double($0) }
+            }
+        }
+    }
+}
+
+// Make PickerKind identifiable for .sheet(item:)
+extension SettingsView.PickerKind: Identifiable {
+    var id: Int { hashValue }
 }
