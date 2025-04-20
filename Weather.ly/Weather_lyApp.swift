@@ -285,7 +285,10 @@ struct CalendarView: View {
                 })
                 .store(in: &cancellables)
         }
-        .navigationDestination(for: DailyForecast.self) { DayDetailView(forecast: $0) }
+        .navigationDestination(for: DailyForecast.self) { forecast in
+            DayDetailView(forecast: forecast)
+                .environmentObject(viewModel)
+        }
     }
 }
 
@@ -453,7 +456,7 @@ private struct ValuePickerSheet: View {
     var body: some View {
         NavigationStack {
             VStack {
-                Picker("", selection: binding) {
+                 Picker("", selection: binding) {
                     ForEach(range(), id: \.self) { v in
                         Text(label(for: v)).tag(v)
                     }
