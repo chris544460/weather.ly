@@ -255,6 +255,7 @@ struct DayCriteria: Codable {
     var tempMin               : Double = 65
     var tempMax               : Double = 75
     var humidityMax           : Double = 60
+    var uvMax                 : Double = 8
     var precipitationAllowed  : Bool   = false
 }
 
@@ -265,6 +266,7 @@ struct DailyForecast: Identifiable, Codable, Hashable {
     var humidity                   : Double
     var precipitationProbability   : Double
     var isGoodDay                  : Bool = false
+    var uvMax                      : Double
 }
 struct HourlyForecast: Identifiable, Codable, Hashable {
     var id          = UUID()
@@ -272,6 +274,7 @@ struct HourlyForecast: Identifiable, Codable, Hashable {
     var temperature : Double
     var humidity    : Double
     var precipProb  : Double
+    var uvIndex     : Double
 }
 /// Continuous block where every hour meets the user’s criteria
 struct GoodWindow: Identifiable, Codable, Hashable {
@@ -281,6 +284,7 @@ struct GoodWindow: Identifiable, Codable, Hashable {
     let minTemp     : Double   // stored in °C
     let maxTemp     : Double
     let maxHumidity : Double
+    let maxUV       : Double
     /// Optional user plan for this window
     var plan: String? = nil
     /// Set `true` once the user explicitly decides to skip this window
@@ -325,7 +329,7 @@ final class WeatherService {
         comps?.queryItems = [
             .init(name: "latitude",  value: String(city.latitude)),
             .init(name: "longitude", value: String(city.longitude)),
-            .init(name: "hourly",    value: "temperature_2m,relative_humidity_2m,precipitation_probability"),
+            .init(name: "hourly",    value: "temperature_2m,relative_humidity_2m,precipitation_probability,uv_index"),
             .init(name: "forecast_days", value: "16"),
             .init(name: "timezone",  value: "auto")
         ]
@@ -340,6 +344,7 @@ final class WeatherService {
                 let temperature_2m: [Double?]
                 let relative_humidity_2m: [Double?]?
                 let precipitation_probability: [Double?]?
+                let uv_index: [Double?]?
             }
             let hourly: Hourly
         }
@@ -363,7 +368,9 @@ final class WeatherService {
             }())
             .map { resp -> [HourlyForecast] in
                 let h = resp.hourly
-                let count = min(h.time.count, h.temperature_2m.count)
+                let count = min(h.time.count,
+                                h.temperature_2m.count,
+                                h.uv_index?.count ?? .max)
                 var out: [HourlyForecast] = []
 
                 for i in 0..<count {
@@ -372,13 +379,15 @@ final class WeatherService {
 
                     let humidity = h.relative_humidity_2m?[safe: i] ?? nil
                     let precip   = h.precipitation_probability?[safe: i] ?? nil
+                    let uv = h.uv_index?[safe:i] ?? nil
 
                     out.append(
                         HourlyForecast(
                             time: h.time[i],
                             temperature: temp,
                             humidity: humidity ?? 0,
-                            precipProb: precip ?? 0
+                            precipProb: precip ?? 0,
+                            uvIndex: uv ?? 0
                         )
                     )
                 }
@@ -393,7 +402,7 @@ final class WeatherService {
         comps?.queryItems = [
             .init(name: "latitude",  value: String(city.latitude)),
             .init(name: "longitude", value: String(city.longitude)),
-            .init(name: "daily",     value: "temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max"),
+            .init(name: "daily", value:"temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,uv_index_max"),
             .init(name: "forecast_days", value: "14"),
             .init(name: "timezone",  value: "auto")
         ]
@@ -418,6 +427,7 @@ private struct OpenMeteoResponse: Decodable {
         let temperature_2m_min             : [Double]
         let precipitation_probability_max  : [Double]?
         let relative_humidity_2m_max       : [Double]?
+        let uv_index_max : [Double]?
     }
     let daily: Daily
 
@@ -428,10 +438,12 @@ private struct OpenMeteoResponse: Decodable {
             let tAvg = (daily.temperature_2m_max[i] + daily.temperature_2m_min[i]) / 2
             let precip = daily.precipitation_probability_max?[safe: i] ?? 0
             let humid  = daily.relative_humidity_2m_max?[safe: i] ?? 0
+            let uv = daily.uv_index_max?[safe:i] ?? 0
             out.append(DailyForecast(date: daily.time[i],
                                      temperature: tAvg,
                                      humidity: humid,
-                                     precipitationProbability: precip))
+                                     precipitationProbability: precip,
+                                     uvMax: uv))
         }
         return out
     }
@@ -697,6 +709,7 @@ struct CalendarView: View {
             let tC = toC(h.temperature)
             return tC >= c.tempMin && tC <= c.tempMax &&
                    h.humidity <= c.humidityMax &&
+                   h.uvIndex  <= c.uvMax &&
                    (c.precipitationAllowed || h.precipProb < 20)
         }
 
@@ -717,12 +730,14 @@ struct CalendarView: View {
 
     private func buildWindow(from slice: [HourlyForecast]) -> GoodWindow {
         let tempsC = slice.map { viewModel.useCelsius ? $0.temperature : ($0.temperature - 32) * 5 / 9 }
+        let maxUV = slice.map(\.uvIndex).max() ?? 0
         return GoodWindow(
             from: slice.first!.time,
             to:   slice.last!.time,
             minTemp: tempsC.min() ?? 0,
             maxTemp: tempsC.max() ?? 0,
             maxHumidity: slice.map(\.humidity).max() ?? 0,
+            maxUV : maxUV,
             plan: nil,
             skipped: false
         )
@@ -754,6 +769,8 @@ struct DayDetailView: View {
                 Text("RH").frame(width: 45, alignment: .trailing)
                 Spacer()
                 Text("Rain").frame(width: 45, alignment: .trailing)
+                Spacer()
+                Text("UV").frame(width: 35, alignment: .trailing)
             }
             .font(.caption.bold())
             .foregroundColor(.secondary)
@@ -771,20 +788,27 @@ struct DayDetailView: View {
                             Text(timeFormatter.string(from: h.time))
                                 .frame(width: 55, alignment: .leading)
                             Spacer()
-                            // temperature with units
+
                             let shownTemp = viewModel.useCelsius ? h.temperature
                                                                  : h.temperature * 9/5 + 32
-                            let unit      = viewModel.useCelsius ? "°C" : "°F"
+                            let unit = viewModel.useCelsius ? "°C" : "°F"
                             Text("\(Int(shownTemp))\(unit)")
                                 .frame(width: 60, alignment: .trailing)
                             Spacer()
-                            Text("\(Int(h.humidity)) %")
+
+                            Text("\(Int(h.humidity)) %")
                                 .frame(width: 50, alignment: .trailing)
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Text("\(Int(h.precipProb)) %")
-                                .frame(width: 50, alignment: .trailing)
+
+                            Text("\(Int(h.precipProb)) %")
+                                .frame(width: 45, alignment: .trailing)
                                 .foregroundColor(.blue)
+                            Spacer()
+
+                            Text("\(Int(h.uvIndex))")
+                                .frame(width: 35, alignment: .trailing)
+                                .foregroundColor(.purple)
                         }
                     }
                 }
@@ -850,6 +874,8 @@ struct GoodWindowDetailView: View {
                 Text("RH").frame(width: 45, alignment: .trailing)
                 Spacer()
                 Text("Rain").frame(width: 45, alignment: .trailing)
+                Spacer()
+                Text("UV").frame(width: 35, alignment: .trailing)
             }
             .font(.caption.bold())
             .foregroundColor(.secondary)
@@ -871,6 +897,10 @@ struct GoodWindowDetailView: View {
                         Text("\(Int(h.precipProb)) %")
                             .frame(width:45,alignment:.trailing)
                             .foregroundColor(.blue)
+                        Spacer()
+                        Text("\(Int(h.uvIndex))")
+                            .frame(width: 35, alignment: .trailing)
+                            .foregroundColor(.purple)
                     }
                 }
             }
@@ -922,10 +952,9 @@ struct GoodWindowDetailView: View {
     
     private func persistWindow() {
         if var list = viewModel.cachedWindows[city.id],
-           let idx = list.firstIndex(where: { $0.id == window.id }) {
+           let idx  = list.firstIndex(where: { $0.id == window.id }) {
             list[idx] = window
-            // `cacheWindows` updates UserDefaults *and* reschedules notifications.
-            viewModel.cacheWindows(for: city, windows: list)
+            viewModel.cacheWindows(for: city, windows: list)   // ← use cacheWindows only
         }
     }
 
@@ -1030,7 +1059,7 @@ struct SettingsView: View {
     // Which picker is currently shown
     @State private var activePicker: PickerKind?
     @State private var showLeadPicker = false
-    enum PickerKind { case minTemp, maxTemp, humidity }
+    enum PickerKind { case minTemp, maxTemp, humidity, uv }
 
     var body: some View {
         Form {
@@ -1069,6 +1098,15 @@ struct SettingsView: View {
                         Text("\(Int(viewModel.criteria.humidityMax)) %")
                             .foregroundColor(.secondary)
                     }
+                }
+                
+                // -- Max UV
+                Button {
+                    activePicker = .uv
+                } label: {
+                    HStack { Text("Max UV Index"); Spacer()
+                             Text("\(Int(viewModel.criteria.uvMax))")
+                                 .foregroundColor(.secondary) }
                 }
 
                 Toggle("Allow Precipitation",
@@ -1154,6 +1192,7 @@ private struct ValuePickerSheet: View {
 
     @State private var tempValue: Double = 0
     @State private var humidityValue: Double = 0
+    @State private var uvValue: Double = 0
 
     var body: some View {
         NavigationStack {
@@ -1176,6 +1215,8 @@ private struct ValuePickerSheet: View {
                 case .minTemp:    tempValue = viewModel.criteria.tempMin
                 case .maxTemp:    tempValue = viewModel.criteria.tempMax
                 case .humidity:   humidityValue = viewModel.criteria.humidityMax
+                case .uv:       uvValue      = viewModel.criteria.uvMax
+                @unknown default: break
                 }
             }
         }
@@ -1205,6 +1246,17 @@ private struct ValuePickerSheet: View {
                                viewModel.criteria.humidityMax = new
                                viewModel.saveCriteria()
                            })
+        case .uv:
+            return Binding(
+                get: { uvValue },
+                set: { new in
+                    uvValue = new
+                    viewModel.criteria.uvMax = new
+                    viewModel.saveCriteria()
+                })
+
+        @unknown default:
+            fatalError("Unhandled picker kind")
         }
     }
 
@@ -1213,6 +1265,7 @@ private struct ValuePickerSheet: View {
         switch kind {
         case .humidity:
             return "\(Int(v)) %"
+        case .uv:       return "\(Int(v))"
         default:
             return "\(Int(v))°"
         }
@@ -1224,6 +1277,7 @@ private struct ValuePickerSheet: View {
         case .minTemp:  return "Min Temp"
         case .maxTemp:  return "Max Temp"
         case .humidity: return "Max Humidity %"
+        case .uv:       return "Max UV Index"
         }
     }
 
@@ -1232,6 +1286,8 @@ private struct ValuePickerSheet: View {
         switch kind {
         case .humidity:
             return Array(0...100).map { Double($0) }
+        case .uv:
+            return Array(0...11).map { Double($0) }
         default:
             if viewModel.useCelsius {
                 return Array(-20...40).map { Double($0) }
