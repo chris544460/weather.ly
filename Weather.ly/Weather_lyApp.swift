@@ -9,6 +9,7 @@ import Foundation
 import SwiftUI
 import Combine
 import MapKit
+import UserNotifications
 
 // MARK: – App entry
 @main
@@ -50,8 +51,27 @@ final class AppViewModel: ObservableObject {
         saveCities()
     }
     
+    // Published prefs
+    @Published var notificationsEnabled: Bool =
+        UserDefaults.standard.object(forKey: AppViewModel.notifyEnabledKey) as? Bool ?? false {
+        didSet { saveNotificationPrefs() }
+    }
+
+    @Published var notifyLeadHours: Int =
+        UserDefaults.standard.object(forKey: AppViewModel.notifyLeadHoursKey) as? Int ?? 2 {
+        didSet { saveNotificationPrefs() }
+    }
+    
     /// Delete one or more cities and persist the change
     func deleteCities(at offsets: IndexSet) {
+        for idx in offsets {
+            let city = cities[idx]
+            if let wins = cachedWindows[city.id] {
+                UNUserNotificationCenter.current()
+                    .removePendingNotificationRequests(
+                        withIdentifiers: wins.map { "win-\(city.id)-\($0.id)" })
+            }
+        }
         cities.remove(atOffsets: offsets)
         saveCities()
     }
@@ -66,15 +86,75 @@ final class AppViewModel: ObservableObject {
     private static let criteriaKey = "savedCriteria"
     private static let unitsKey    = "savedUnits"
     private static let windowsKey  = "savedWindows"
+    private static let notifyEnabledKey   = "notifyEnabled"
+    private static let notifyLeadHoursKey = "notifyLeadHours"
 
     init() {
         loadCities()
         loadCriteria()
         loadWindows()
+        requestNotificationPermission()
     }
 
 
+    // MARK: – Notifications
+    private func requestNotificationPermission() {
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
 
+    private func saveNotificationPrefs() {
+        UserDefaults.standard.set(notificationsEnabled, forKey: Self.notifyEnabledKey)
+        UserDefaults.standard.set(notifyLeadHours,      forKey: Self.notifyLeadHoursKey)
+        rescheduleAll()
+    }
+
+    /// Schedule alerts for every good‑weather window of one city
+    func scheduleNotifications(for city: City, windows: [GoodWindow]) {
+        guard notificationsEnabled else { return }
+
+        let center = UNUserNotificationCenter.current()
+        let lead   = TimeInterval(notifyLeadHours * 3600)
+
+        // Clear older requests for this city
+        center.removePendingNotificationRequests(
+            withIdentifiers: windows.map { "win-\(city.id)-\($0.id)" })
+
+        for w in windows {
+            let fireDate = w.from.addingTimeInterval(-lead)
+            guard fireDate > Date() else { continue }
+
+            var comps = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute], from: fireDate)
+            comps.second = 0
+
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+
+            let content = UNMutableNotificationContent()
+            content.title = "Great weather coming!"
+            content.body  = "\(city.name): starts at " +
+                DateFormatter.localizedString(from: w.from,
+                                              dateStyle: .none,
+                                              timeStyle: .short)
+            content.sound = .default
+
+            let req = UNNotificationRequest(identifier: "win-\(city.id)-\(w.id)",
+                                            content: content,
+                                            trigger: trigger)
+            center.add(req)
+        }
+    }
+
+    /// Wipe everything and reschedule from cached data
+    func rescheduleAll() {
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+        for c in cities {
+            if let wins = cachedWindows[c.id] {
+                scheduleNotifications(for: c, windows: wins)
+            }
+        }
+    }
+    
 
     private func saveUnits() {
         UserDefaults.standard.set(useCelsius, forKey: AppViewModel.unitsKey)
@@ -122,6 +202,7 @@ final class AppViewModel: ObservableObject {
     func cacheWindows(for city: City, windows: [GoodWindow]) {
         cachedWindows[city.id] = windows
         saveWindows()
+        scheduleNotifications(for: city, windows: windows)
     }
 
 
@@ -830,6 +911,7 @@ struct SettingsView: View {
 
     // Which picker is currently shown
     @State private var activePicker: PickerKind?
+    @State private var showLeadPicker = false
     enum PickerKind { case minTemp, maxTemp, humidity }
 
     var body: some View {
@@ -888,11 +970,29 @@ struct SettingsView: View {
                     convertCriteria(toCelsius: newIsCelsius)
                 }
             }
+            
+            Section("Notifications") {
+                Toggle("Enable alerts", isOn: $viewModel.notificationsEnabled)
+                Button {
+                    showLeadPicker = true
+                } label: {
+                    HStack {
+                        Text("Alert before")
+                        Spacer()
+                        Text(labelForLeadHours(viewModel.notifyLeadHours))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
         }
         .navigationTitle("Settings")
         // ---------- modal sheet ----------
         .sheet(item: $activePicker) { kind in
             ValuePickerSheet(kind: kind)
+                .environmentObject(viewModel)
+        }
+        .sheet(isPresented: $showLeadPicker) {
+            LeadTimePickerSheet()
                 .environmentObject(viewModel)
         }
     }
@@ -908,6 +1008,16 @@ struct SettingsView: View {
             viewModel.criteria.tempMax = viewModel.criteria.tempMax * 9 / 5 + 32
         }
         viewModel.saveCriteria()
+    }
+    
+    /// Produces a nicer label for the lead‑time picker (hours → days when possible)
+    private func labelForLeadHours(_ h: Int) -> String {
+        if h % 24 == 0 {
+            let d = h / 24
+            return "Alert \(d) d before"
+        } else {
+            return "Alert \(h) h before"
+        }
     }
 }
 
@@ -1003,6 +1113,85 @@ private struct ValuePickerSheet: View {
             } else {
                 return Array(-4...104).map { Double($0) }
             }
+        }
+    }
+}
+
+// MARK: LeadTimePickerSheet – value + unit wheels
+private struct LeadTimePickerSheet: View {
+
+    // simple enum for hours vs. days
+    enum Unit: String, CaseIterable, Identifiable {
+        case hours = "h"
+        case days  = "d"
+        var id: String { rawValue }
+    }
+
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var viewModel: AppViewModel
+
+    // editable state
+    @State private var value: Int = 1
+    @State private var unit: Unit = .hours       // h / d
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                // two independent wheels side‑by‑side
+                HStack {
+                    // numeric value wheel
+                    Picker("", selection: $value) {
+                        ForEach(range(for: unit), id: \.self) { v in
+                            Text("\(v)").tag(v)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .pickerStyle(.wheel)
+
+                    // unit wheel
+                    Picker("", selection: $unit) {
+                        ForEach(Unit.allCases) { u in
+                            Text(u == .hours ? "hours" : "days").tag(u)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .pickerStyle(.wheel)
+                }
+
+                // friendly preview (“Alert 3 d before” / “Alert 12 h before”)
+                Text("Alert \(value) \(unit.rawValue) before")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .navigationTitle("Alert lead time")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        // convert selection to hours and persist
+                        let totalHrs = unit == .hours ? value : value * 24
+                        viewModel.notifyLeadHours = totalHrs
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                // decompose stored hours into closest unit+value
+                if viewModel.notifyLeadHours % 24 == 0 {
+                    unit  = .days
+                    value = max(1, viewModel.notifyLeadHours / 24)
+                } else {
+                    unit  = .hours
+                    value = max(1, viewModel.notifyLeadHours)
+                }
+            }
+        }
+    }
+
+    // helper range based on unit
+    private func range(for unit: Unit) -> [Int] {
+        switch unit {
+        case .hours: return Array(1...23)          // 1–23 h
+        case .days:  return Array(1...14)          // 1–14 d (≈ 2 weeks)
         }
     }
 }
