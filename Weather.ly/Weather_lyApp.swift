@@ -105,13 +105,18 @@ struct DailyForecast: Identifiable, Codable, Hashable {
     var precipitationProbability   : Double
     var isGoodDay                  : Bool = false
 }
-/// Single hour forecast
 struct HourlyForecast: Identifiable, Codable, Hashable {
     var id          = UUID()
     var time        : Date
     var temperature : Double
     var humidity    : Double
     var precipProb  : Double
+}
+/// Continuous block where every hour meets the user’s criteria
+struct GoodWindow: Identifiable, Hashable {
+    let id   = UUID()
+    let from : Date
+    let to   : Date
 }
 
 /// Wrapper used for navigation so we know which city the daily forecast belongs to
@@ -306,26 +311,50 @@ struct CityListView: View {
 struct CalendarView: View {
     let city: City
     @State private var forecasts: [DailyForecast] = []
+    @State private var goodWindows: [GoodWindow] = []
     @EnvironmentObject var viewModel: AppViewModel
     @State private var cancellables = Set<AnyCancellable>()
     @State private var errorMessage: String?
+    @State private var showSettingsSheet = false
 
     var body: some View {
         VStack {
             Text("Forecast for \(city.name)").font(.headline)
 
-            // Simple list until we build a calendar grid
-            List(forecasts) { f in
-                NavigationLink(value: DailySelection(city: city, daily: f)) {
-                    HStack {
-                        Text(f.date, style: .date)
-                        Spacer()
-                        let shownTemp = viewModel.useCelsius ? f.temperature
-                                                             : f.temperature * 9/5 + 32
-                        Text("\(Int(shownTemp))°")
+            List {
+                // upcoming windows section (always visible)
+                Section(header: Text("Upcoming Good Windows")) {
+                    if goodWindows.isEmpty {
+                        Button {
+                            showSettingsSheet = true
+                        } label: {
+                            HStack {
+                                Text("No periods match your criteria.")
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("Adjust criteria ›")
+                            }
+                        }
+                    } else {
+                        ForEach(goodWindows.prefix(6)) { w in
+                            Text("\(dateFmt.string(from: w.from)) → \(dateFmt.string(from: w.to))")
+                        }
                     }
                 }
-                .listRowBackground(f.isGoodDay ? Color.green.opacity(0.25) : Color.clear)
+
+                // daily forecasts
+                ForEach(forecasts) { f in
+                    NavigationLink(value: DailySelection(city: city, daily: f)) {
+                        HStack {
+                            Text(f.date, style: .date)
+                            Spacer()
+                            let shownTemp = viewModel.useCelsius ? f.temperature
+                                                                 : f.temperature * 9/5 + 32
+                            Text("\(Int(shownTemp))°")
+                        }
+                    }
+                    .listRowBackground(f.isGoodDay ? Color.green.opacity(0.25) : Color.clear)
+                }
             }
 
             if let err = errorMessage {
@@ -359,11 +388,59 @@ struct CalendarView: View {
                         }
                 })
                 .store(in: &cancellables)
+            
+            // ---- fetch hourly to build good windows ----
+            viewModel.weatherService.fetchHourly(for: city)
+                .receive(on: DispatchQueue.main)
+                .catch { _ in Just([]) }
+                .sink { hrs in
+                    goodWindows = computeGoodWindows(from: hrs)
+                }
+                .store(in: &cancellables)
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            SettingsView().environmentObject(viewModel)
         }
         .navigationDestination(for: DailySelection.self) { sel in
             DayDetailView(selection: sel)
                 .environmentObject(viewModel)
         }
+    }
+
+    // MARK: - Good window detection
+    private func computeGoodWindows(from hours: [HourlyForecast]) -> [GoodWindow] {
+        guard !hours.isEmpty else { return [] }
+        let crit = self.viewModel.criteria
+
+        func matches(_ h: HourlyForecast) -> Bool {
+            let t = viewModel.useCelsius ? h.temperature : h.temperature * 9/5 + 32
+            let tOK = t >= crit.tempMin && t <= crit.tempMax
+            let hOK = h.humidity <= crit.humidityMax
+            let rOK = crit.precipitationAllowed || h.precipProb < 20
+            return tOK && hOK && rOK
+        }
+
+        var result: [GoodWindow] = []
+        var start: Date?
+        var prev: Date?
+
+        for h in hours {
+            if matches(h) {
+                if start == nil { start = h.time }
+            } else if let s = start {
+                result.append(GoodWindow(from: s, to: prev ?? s))
+                start = nil
+            }
+            prev = h.time
+        }
+        if let s = start { result.append(GoodWindow(from: s, to: prev ?? s)) }
+        return result
+    }
+
+    private var dateFmt: DateFormatter {
+        let df = DateFormatter()
+        df.dateFormat = "MMM d, HH:mm"
+        return df
     }
 }
 
