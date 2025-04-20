@@ -153,7 +153,7 @@ final class WeatherService {
             .init(name: "latitude",  value: String(city.latitude)),
             .init(name: "longitude", value: String(city.longitude)),
             .init(name: "hourly",    value: "temperature_2m,relative_humidity_2m,precipitation_probability"),
-            .init(name: "forecast_days", value: "2"),
+            .init(name: "forecast_days", value: "16"),
             .init(name: "timezone",  value: "auto")
         ]
         guard let url = comps?.url else {
@@ -377,28 +377,35 @@ struct DayDetailView: View {
 
     var body: some View {
         List {
-            if hours.isEmpty {
+        if hours.isEmpty {
                 ProgressView("Loading…")
                     .frame(maxWidth: .infinity, alignment: .center)
+            } else if hoursForDay().isEmpty {
+                Text("No hourly data available for this date.")
+                    .foregroundColor(.secondary)
+                    .padding()
             } else {
                 Section(header: Text(selection.daily.date, style: .date).font(.title2)) {
                     ForEach(hoursForDay()) { h in
                         HStack {
                             Text(timeFormatter.string(from: h.time))
-                                .frame(width: 60, alignment: .leading)
+                                .frame(width: 55, alignment: .leading)
                             Spacer()
-                            let shown = viewModel.useCelsius ? h.temperature
-                                                             : h.temperature * 9/5 + 32
-                            let unit  = viewModel.useCelsius ? "°C" : "°F"
-                            Text("\(Int(shown))\(unit)")
+                            // temperature with units
+                            let shownTemp = viewModel.useCelsius ? h.temperature
+                                                                 : h.temperature * 9/5 + 32
+                            let unit      = viewModel.useCelsius ? "°C" : "°F"
+                            Text("\(Int(shownTemp))\(unit)")
+                                .frame(width: 60, alignment: .trailing)
                             Spacer()
-                            Text("\(Int(h.humidity)) % RH")
+                            Text("\(Int(h.humidity)) %")
+                                .frame(width: 50, alignment: .trailing)
                                 .foregroundColor(.secondary)
                             Spacer()
                             Text("\(Int(h.precipProb)) %")
+                                .frame(width: 50, alignment: .trailing)
                                 .foregroundColor(.blue)
                         }
-                        .font(.system(size: 14, weight: .regular, design: .monospaced))
                     }
                 }
             }
