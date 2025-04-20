@@ -361,6 +361,7 @@ struct CalendarView: View {
     let city: City
     @State private var forecasts: [DailyForecast] = []
     @State private var goodWindows: [GoodWindow] = []
+    @State private var isLoadingGoodWindows = true
     @EnvironmentObject var viewModel: AppViewModel
     @State private var cancellables = Set<AnyCancellable>()
     @State private var errorMessage: String?
@@ -371,9 +372,15 @@ struct CalendarView: View {
             Text("Forecast for \(city.name)").font(.headline)
 
             List {
-                // upcoming windows section (always visible)
-                Section(header: Text("Upcoming Good Windows")) {
-                    if goodWindows.isEmpty {
+            // upcoming windows section (always visible)
+            Section(header: Text("Upcoming Good Windows")) {
+                    if isLoadingGoodWindows {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                            Spacer()
+                        }
+                    } else if goodWindows.isEmpty {
                         Button {
                             showSettingsSheet = true
                         } label: {
@@ -388,8 +395,14 @@ struct CalendarView: View {
                         ForEach(goodWindows.prefix(6)) { w in
                             NavigationLink(value: w) {
                                 HStack {
-                                    Text("\(dateFmt.string(from: w.from)) → \(dateFmt.string(from: w.to))")
+                                    // ▶︎ Weekday + time range
+                                    let wk = weekday(w.from)
+                                    Text("\(wk) \(dateFmt.string(from: w.from)) → \(dateFmt.string(from: w.to))")
+                                        .fontWeight(isWeekendWindow(w) ? .semibold : .regular)
+                                        .foregroundColor(isWeekendWindow(w) ? .orange : .primary)
+ 
                                     Spacer()
+ 
                                     // right‑aligned stats
                                     let minT = viewModel.useCelsius ? w.minTemp : w.minTemp * 9/5 + 32
                                     let maxT = viewModel.useCelsius ? w.maxTemp : w.maxTemp * 9/5 + 32
@@ -428,6 +441,7 @@ struct CalendarView: View {
         .onAppear {
             // show cached windows, if any, immediately
             goodWindows = viewModel.cachedWindows[city.id] ?? []
+            isLoadingGoodWindows = goodWindows.isEmpty
 
             viewModel.fetchForecasts(for: city)
                 .sink(receiveCompletion: { result in
@@ -464,6 +478,7 @@ struct CalendarView: View {
                     let wins = computeGoodWindows(from: hrs)
                     goodWindows = wins
                     viewModel.cacheWindows(for: city, windows: wins)
+                    isLoadingGoodWindows = false
                 }
                 .store(in: &cancellables)
         }
@@ -480,6 +495,27 @@ struct CalendarView: View {
         }
     }
 
+    /// Three‑letter weekday abbreviation (Mon, Tue, …)
+    private func weekday(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "EEE"
+        return df.string(from: date)
+    }
+ 
+    /// Treat as “weekend window” if:
+    /// - Saturday or Sunday
+    /// - Friday *and* start time is 17:00 or later
+    private func isWeekendWindow(_ w: GoodWindow) -> Bool {
+        let cal  = Calendar.current
+        let wd   = cal.component(.weekday, from: w.from)   // 1 = Sun … 7 = Sat
+        if wd == 1 || wd == 7 { return true }              // Sun / Sat
+        if wd == 6 {                                       // Friday
+            let hour = cal.component(.hour, from: w.from)
+            return hour >= 17
+        }
+        return false
+    }
+ 
     // MARK: - Good window detection
     private func computeGoodWindows(from hours: [HourlyForecast]) -> [GoodWindow] {
         guard !hours.isEmpty else { return [] }
