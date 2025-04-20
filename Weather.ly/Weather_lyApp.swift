@@ -543,7 +543,7 @@ struct CalendarView: View {
                             }
                         }
                     } else {
-                        ForEach(goodWindows.prefix(6)) { w in
+                        ForEach(goodWindows) { w in
                             NavigationLink(value: w) {
                                 HStack {
                                     // ▶︎ Weekday + time range
