@@ -1,9 +1,14 @@
-// Weather.ly
-// SwiftUI App Skeleton (iOS 16+ NavigationStack)
+//
+//  Weather_lyApp.swift
+//  Weather.ly
+//
+//  Created 2025‑04‑19
+//
 
 import SwiftUI
 import Combine
 
+// MARK: – App entry
 @main
 struct WeatherlyApp: App {
     @StateObject private var viewModel = AppViewModel()
@@ -22,67 +27,130 @@ struct WeatherlyApp: App {
     }
 }
 
-// MARK: - AppViewModel
+// MARK: – View‑model
 final class AppViewModel: ObservableObject {
-    @Published var cities: [City] = []
-    @Published var navigationPath = NavigationPath()
-    @Published var criteria = DayCriteria()
+    @Published var cities: [City]          = []
+    @Published var navigationPath          = NavigationPath()
+    @Published var criteria                = DayCriteria()
 
-    private let weatherService = WeatherService()
-    private var cancellables = Set<AnyCancellable>()
+    let weatherService = WeatherService()
+    var cancellables   = Set<AnyCancellable>()
 
-    init() {
-        // Load saved cities & criteria
-    }
-
-    func addCity(_ city: City) {
-        cities.append(city)
-        // Persist
-    }
+    func addCity(_ city: City) { cities.append(city) }
 
     func fetchForecasts(for city: City) -> AnyPublisher<[DailyForecast], Error> {
         weatherService.fetchForecast(for: city)
     }
 }
 
-// MARK: - Models
+// MARK: – Models
 struct City: Identifiable, Codable, Hashable {
-    var id: UUID = UUID()
-    var name: String
-    var latitude: Double
-    var longitude: Double
+    var id        = UUID()
+    var name      : String
+    var latitude  : Double
+    var longitude : Double
 }
 
 struct DayCriteria: Codable {
-    var tempMin: Double = 65
-    var tempMax: Double = 75
-    var humidityMax: Double = 60
-    var precipitationAllowed: Bool = false
-    // Add more criteria as needed
+    var tempMin               : Double = 65
+    var tempMax               : Double = 75
+    var humidityMax           : Double = 60
+    var precipitationAllowed  : Bool   = false
 }
 
 struct DailyForecast: Identifiable, Codable, Hashable {
-    var id: UUID = UUID()
-    var date: Date
-    var temperature: Double
-    var humidity: Double
-    var precipitationProbability: Double
-    var isGoodDay: Bool = false
+    var id                         = UUID()
+    var date                       : Date
+    var temperature                : Double   // average of max/min
+    var humidity                   : Double
+    var precipitationProbability   : Double
+    var isGoodDay                  : Bool = false
 }
 
-// MARK: - WeatherService
+// MARK: – WeatherService (Open‑Meteo)
+/// Fetches a 14‑day daily forecast and maps it into `[DailyForecast]`.
 final class WeatherService {
+
+    private let session: URLSession
+    private let decoder: JSONDecoder
+
+    init(session: URLSession = .shared) {
+        self.session  = session
+        self.decoder  = JSONDecoder()
+        decoder.dateDecodingStrategy = .formatted(Self.isoDate)
+    }
+
     func fetchForecast(for city: City) -> AnyPublisher<[DailyForecast], Error> {
-        // TODO: Implement API calls and aggregation
-        Just([])
-            .setFailureType(to: Error.self)
+        guard let url = buildURL(for: city) else {
+            return Fail(error: URLError(.badURL)).eraseToAnyPublisher()
+        }
+
+        return session.dataTaskPublisher(for: url)
+            .map(\.data)
+            .decode(type: OpenMeteoResponse.self, decoder: decoder)
+            .map { $0.toDailyForecasts() }
             .eraseToAnyPublisher()
+    }
+
+    // Build the Open‑Meteo URL
+    private func buildURL(for city: City) -> URL? {
+        var comps = URLComponents(string: "https://api.open-meteo.com/v1/forecast")
+        comps?.queryItems = [
+            .init(name: "latitude",  value: String(city.latitude)),
+            .init(name: "longitude", value: String(city.longitude)),
+            .init(name: "daily",     value: "temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max"),
+            .init(name: "forecast_days", value: "14"),
+            .init(name: "timezone",  value: "auto")
+        ]
+        return comps?.url
+    }
+
+    /// ISO‑date formatter (yyyy‑MM‑dd)
+    private static let isoDate: DateFormatter = {
+        let df = DateFormatter()
+        df.calendar = Calendar(identifier: .gregorian)
+        df.locale   = Locale(identifier: "en_US_POSIX")
+        df.dateFormat = "yyyy-MM-dd"
+        return df
+    }()
+}
+
+// MARK: – Open‑Meteo response mapping
+private struct OpenMeteoResponse: Decodable {
+    struct Daily: Decodable {
+        let time                           : [Date]
+        let temperature_2m_max             : [Double]
+        let temperature_2m_min             : [Double]
+        let precipitation_probability_max  : [Double]?
+        let relative_humidity_2m_max       : [Double]?
+    }
+    let daily: Daily
+
+    func toDailyForecasts() -> [DailyForecast] {
+        let n = daily.time.count
+        var out: [DailyForecast] = []
+        for i in 0..<n {
+            let tAvg = (daily.temperature_2m_max[i] + daily.temperature_2m_min[i]) / 2
+            let precip = daily.precipitation_probability_max?[safe: i] ?? 0
+            let humid  = daily.relative_humidity_2m_max?[safe: i] ?? 0
+            out.append(DailyForecast(date: daily.time[i],
+                                     temperature: tAvg,
+                                     humidity: humid,
+                                     precipitationProbability: precip))
+        }
+        return out
     }
 }
 
-// MARK: - Views
+// Safe array subscript
+private extension Collection {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
 
-// 1. City List & Navigation via NavigationStack
+// MARK: – Views
+// 1. City List
 struct CityListView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @State private var showingAdd = false
@@ -95,68 +163,68 @@ struct CityListView: View {
         }
         .navigationTitle("Cities")
         .toolbar {
-            Button(action: { showingAdd = true }) {
+            Button { showingAdd = true } label: {
                 Image(systemName: "plus")
             }
         }
         .sheet(isPresented: $showingAdd) {
-            AddCityView()
-                .environmentObject(viewModel)
+            AddCityView().environmentObject(viewModel)
         }
     }
 }
 
-// 2. Calendar View of Forecasts
+// 2. Calendar View
 struct CalendarView: View {
-    var city: City
+    let city: City
     @State private var forecasts: [DailyForecast] = []
-    @State private var cancellables = Set<AnyCancellable>()
     @EnvironmentObject var viewModel: AppViewModel
+    @State private var cancellables = Set<AnyCancellable>()
     @State private var errorMessage: String?
 
     var body: some View {
         VStack {
-            Text("Forecast for \(city.name)")
-                .font(.headline)
+            Text("Forecast for \(city.name)").font(.headline)
 
-            // TODO: Calendar grid placeholder
-            Text("Calendar placeholder")
-
-            if let first = forecasts.first {
-                NavigationLink("Details", value: first)
+            // Simple list until we build a calendar grid
+            List(forecasts) { f in
+                NavigationLink(value: f) {
+                    HStack {
+                        Text(f.date, style: .date)
+                        Spacer()
+                        Text("\(Int(f.temperature))°")
+                    }
+                }
             }
 
-            if let error = errorMessage {
-                Text(error).foregroundColor(.red)
+            if let err = errorMessage {
+                Text(err).foregroundColor(.red)
             }
         }
         .onAppear {
             viewModel.fetchForecasts(for: city)
-                .sink(receiveCompletion: { completion in
-                    if case let .failure(error) = completion {
-                        errorMessage = error.localizedDescription
+                .sink(receiveCompletion: { result in
+                    if case .failure(let err) = result {
+                        errorMessage = err.localizedDescription
                     }
                 }, receiveValue: { data in
                     forecasts = data
                 })
                 .store(in: &cancellables)
         }
-        .navigationDestination(for: DailyForecast.self) { forecast in
-            DayDetailView(forecast: forecast)
-        }
+        .navigationDestination(for: DailyForecast.self) { DayDetailView(forecast: $0) }
     }
 }
 
 // 3. Day Detail View
 struct DayDetailView: View {
-    var forecast: DailyForecast
+    let forecast: DailyForecast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Date: \(forecast.date, style: .date)")
-            Text("Temp: \(Int(forecast.temperature))°F")
-            Text("Humidity: \(Int(forecast.humidity))%")
-            Text("Precipitation: \(Int(forecast.precipitationProbability * 100))%")
+            Text(forecast.date, style: .date).font(.title)
+            Text("Avg Temp: \(Int(forecast.temperature)) °F")
+            Text("Humidity: \(Int(forecast.humidity)) %")
+            Text("Precip Prob: \(Int(forecast.precipitationProbability)) %")
         }
         .padding()
         .navigationTitle("Day Details")
@@ -164,65 +232,72 @@ struct DayDetailView: View {
 }
 
 // 4. Add City View
+// 4. Add City View  – pre‑defined list, no typing
 struct AddCityView: View {
     @EnvironmentObject var viewModel: AppViewModel
-    @Environment(\.presentationMode) var presentationMode
-    @State private var name = ""
-    @State private var lat = ""
-    @State private var lon = ""
+    @Environment(\.presentationMode) var presentation
+
+    /// Pre‑made list of popular cities (add more as you like)
+    private let sampleCities: [City] = [
+        City(name: "New York",    latitude: 40.7128, longitude: -74.0060),
+        City(name: "Los Angeles", latitude: 34.0522, longitude: -118.2437),
+        City(name: "Chicago",     latitude: 41.8781, longitude:  -87.6298),
+        City(name: "London",      latitude: 51.5074, longitude:   -0.1278),
+        City(name: "Paris",       latitude: 48.8566, longitude:     2.3522),
+        City(name: "Tokyo",       latitude: 35.6895, longitude:   139.6917)
+    ]
+
+    @State private var selectionIndex = 0
 
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("City Info")) {
-                    TextField("Name", text: $name)
-                    TextField("Latitude", text: $lat)
-                        .keyboardType(.decimalPad)
-                    TextField("Longitude", text: $lon)
-                        .keyboardType(.decimalPad)
+                Picker("Select a city", selection: $selectionIndex) {
+                    ForEach(sampleCities.indices, id: \.self) { i in
+                        Text(sampleCities[i].name).tag(i)
+                    }
                 }
+                .pickerStyle(.wheel)
             }
             .navigationTitle("Add City")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        if let latitude = Double(lat), let longitude = Double(lon) {
-                            let city = City(name: name, latitude: latitude, longitude: longitude)
-                            viewModel.addCity(city)
-                            presentationMode.wrappedValue.dismiss()
-                        }
+                        let city = sampleCities[selectionIndex]
+                        viewModel.addCity(city)
+                        presentation.wrappedValue.dismiss()
                     }
                 }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { presentationMode.wrappedValue.dismiss() }
+                    Button("Cancel") { presentation.wrappedValue.dismiss() }
                 }
             }
         }
     }
 }
 
-// 5. Settings View (criteria configuration)
+// 5. Settings View (criteria – not wired into UI yet)
 struct SettingsView: View {
     @EnvironmentObject var viewModel: AppViewModel
 
     var body: some View {
         Form {
-            Section(header: Text("Day Criteria")) {
+            Section("Day Criteria") {
                 HStack {
-                    Text("Min Temp")
+                    Text("Min Temp")
                     Spacer()
-                    TextField("Min", value: $viewModel.criteria.tempMin, formatter: NumberFormatter())
-                        .keyboardType(.decimalPad)
-                        .frame(width: 60)
+                    TextField("Min", value: $viewModel.criteria.tempMin,
+                              formatter: NumberFormatter())
+                        .keyboardType(.decimalPad).frame(width: 60)
                 }
                 HStack {
-                    Text("Max Temp")
+                    Text("Max Temp")
                     Spacer()
-                    TextField("Max", value: $viewModel.criteria.tempMax, formatter: NumberFormatter())
-                        .keyboardType(.decimalPad)
-                        .frame(width: 60)
+                    TextField("Max", value: $viewModel.criteria.tempMax,
+                              formatter: NumberFormatter())
+                        .keyboardType(.decimalPad).frame(width: 60)
                 }
-                Toggle("Allow Precipitation", isOn: $viewModel.criteria.precipitationAllowed)
+                Toggle("Allow Precipitation", isOn: $viewModel.criteria.precipitationAllowed)
             }
         }
         .navigationTitle("Settings")
