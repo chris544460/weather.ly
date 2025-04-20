@@ -130,7 +130,8 @@ final class AppViewModel: ObservableObject {
 // MARK: – Models
 struct City: Identifiable, Codable, Hashable {
     var id        = UUID()
-    var name      : String
+    var name      : String           // primary label (city / neighbourhood)
+    var subtitle  : String? = nil    // secondary label (borough, admin area, etc.)
     var latitude  : Double
     var longitude : Double
 }
@@ -334,9 +335,16 @@ struct CityListView: View {
     var body: some View {
         List {
             ForEach(viewModel.cities) { city in
-                NavigationLink(value: city) {
-                    Text(city.name)
-                }
+            NavigationLink(value: city) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(city.name)
+                        if let sub = city.subtitle {
+                            Text(sub)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+            }
             }
             .onDelete { offsets in
                 viewModel.deleteCities(at: offsets)
@@ -755,12 +763,12 @@ final class CitySearchViewModel: NSObject, ObservableObject, MKLocalSearchComple
         search.start { response, _ in
             guard let item = response?.mapItems.first else { return }
             let coord = item.placemark.coordinate
-            let name  = item.placemark.locality ??
-                        item.placemark.name ??
-                        completion.title
-            let city  = City(name: name,
-                             latitude: coord.latitude,
-                             longitude: coord.longitude)
+            let city  = City(
+                name: completion.title,
+                subtitle: completion.subtitle.isEmpty ? nil : completion.subtitle,
+                latitude: coord.latitude,
+                longitude: coord.longitude
+            )
             DispatchQueue.main.async {
                 completionHandler(city)
             }
