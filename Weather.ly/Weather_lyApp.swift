@@ -105,6 +105,21 @@ struct DailyForecast: Identifiable, Codable, Hashable {
     var precipitationProbability   : Double
     var isGoodDay                  : Bool = false
 }
+/// Single hour forecast
+struct HourlyForecast: Identifiable, Codable, Hashable {
+    var id          = UUID()
+    var time        : Date
+    var temperature : Double
+    var humidity    : Double
+    var precipProb  : Double
+}
+
+/// Wrapper used for navigation so we know which city the daily forecast belongs to
+struct DailySelection: Identifiable, Hashable {
+    var id          = UUID()
+    var city        : City
+    var daily       : DailyForecast
+}
 
 // MARK: – WeatherService (Open‑Meteo)
 /// Fetches a 14‑day daily forecast and maps it into `[DailyForecast]`.
@@ -128,6 +143,66 @@ final class WeatherService {
             .map(\.data)
             .decode(type: OpenMeteoResponse.self, decoder: decoder)
             .map { $0.toDailyForecasts() }
+            .eraseToAnyPublisher()
+    }
+
+    /// Fetch hourly forecast (48 h) and map to HourlyForecast
+    func fetchHourly(for city: City) -> AnyPublisher<[HourlyForecast], Error> {
+        var comps = URLComponents(string: "https://api.open-meteo.com/v1/forecast")
+        comps?.queryItems = [
+            .init(name: "latitude",  value: String(city.latitude)),
+            .init(name: "longitude", value: String(city.longitude)),
+            .init(name: "hourly",    value: "temperature_2m,relative_humidity_2m,precipitation_probability"),
+            .init(name: "forecast_days", value: "2"),
+            .init(name: "timezone",  value: "auto")
+        ]
+        guard let url = comps?.url else {
+            return Fail(error: URLError(.badURL)).eraseToAnyPublisher()
+        }
+
+        struct HourlyResp: Decodable {
+            struct Hourly: Decodable {
+                let time: [Date]
+                let temperature_2m: [Double]
+                let relative_humidity_2m: [Double]?
+                let precipitation_probability: [Double]?
+            }
+            let hourly: Hourly
+        }
+
+        return session.dataTaskPublisher(for: url)
+            .map(\.data)
+            .handleEvents(receiveOutput: { data in
+                if let string = String(data: data, encoding: .utf8) {
+                    print("[DEBUG] Raw hourly JSON:\n", string)
+                }
+            })
+            .decode(type: HourlyResp.self, decoder: {
+                let df = DateFormatter()
+                df.calendar = Calendar(identifier: .gregorian)
+                df.locale   = Locale(identifier: "en_US_POSIX")
+                df.dateFormat = "yyyy-MM-dd'T'HH:mm"
+
+                let dec = JSONDecoder()
+                dec.dateDecodingStrategy = .formatted(df)
+                return dec
+            }())
+            .map { resp -> [HourlyForecast] in
+                let h = resp.hourly
+                let count = h.time.count
+                var out: [HourlyForecast] = []
+                for i in 0..<count {
+                    out.append(
+                        HourlyForecast(
+                            time: h.time[i],
+                            temperature: h.temperature_2m[i],
+                            humidity: h.relative_humidity_2m?[safe: i] ?? 0,
+                            precipProb: h.precipitation_probability?[safe: i] ?? 0
+                        )
+                    )
+                }
+                return out
+            }
             .eraseToAnyPublisher()
     }
 
@@ -241,7 +316,7 @@ struct CalendarView: View {
 
             // Simple list until we build a calendar grid
             List(forecasts) { f in
-                NavigationLink(value: f) {
+                NavigationLink(value: DailySelection(city: city, daily: f)) {
                     HStack {
                         Text(f.date, style: .date)
                         Spacer()
@@ -285,8 +360,8 @@ struct CalendarView: View {
                 })
                 .store(in: &cancellables)
         }
-        .navigationDestination(for: DailyForecast.self) { forecast in
-            DayDetailView(forecast: forecast)
+        .navigationDestination(for: DailySelection.self) { sel in
+            DayDetailView(selection: sel)
                 .environmentObject(viewModel)
         }
     }
@@ -295,20 +370,69 @@ struct CalendarView: View {
 // 3. Day Detail View
 struct DayDetailView: View {
     @EnvironmentObject var viewModel: AppViewModel
-    let forecast: DailyForecast
+    let selection: DailySelection
+
+    @State private var hours: [HourlyForecast] = []
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(forecast.date, style: .date).font(.title)
-            let shownTemp = viewModel.useCelsius ? forecast.temperature
-                                                 : forecast.temperature * 9/5 + 32
-            let unit = viewModel.useCelsius ? "°C" : "°F"
-            Text("Avg Temp: \(Int(shownTemp))\(unit)")
-            Text("Humidity: \(Int(forecast.humidity)) %")
-            Text("Precip Prob: \(Int(forecast.precipitationProbability)) %")
+        List {
+            if hours.isEmpty {
+                ProgressView("Loading…")
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else {
+                Section(header: Text(selection.daily.date, style: .date).font(.title2)) {
+                    ForEach(hoursForDay()) { h in
+                        HStack {
+                            Text(timeFormatter.string(from: h.time))
+                                .frame(width: 60, alignment: .leading)
+                            Spacer()
+                            let shown = viewModel.useCelsius ? h.temperature
+                                                             : h.temperature * 9/5 + 32
+                            let unit  = viewModel.useCelsius ? "°C" : "°F"
+                            Text("\(Int(shown))\(unit)")
+                            Spacer()
+                            Text("\(Int(h.humidity)) % RH")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(Int(h.precipProb)) %")
+                                .foregroundColor(.blue)
+                        }
+                        .font(.system(size: 14, weight: .regular, design: .monospaced))
+                    }
+                }
+            }
         }
-        .padding()
         .navigationTitle("Day Details")
+    .task {
+            viewModel.weatherService.fetchHourly(for: selection.city)
+                .receive(on: DispatchQueue.main)
+                .handleEvents(receiveSubscription: { _ in
+                    print("[DEBUG] Started hourly fetch for", selection.city.name)
+                }, receiveOutput: { hrs in
+                    print("[DEBUG] Received", hrs.count, "hourly entries")
+                }, receiveCompletion: { comp in
+                    print("[DEBUG] Hourly fetch completion:", comp)
+                })
+                .catch { err -> Just<[HourlyForecast]> in
+                    print("[DEBUG] Hourly fetch error:", err.localizedDescription)
+                    return Just([])
+                }
+                .sink { hours = $0 }
+                .store(in: &cancellables)
+        }
+    }
+
+    // Filter received 48 h list to the selected date
+    private func hoursForDay() -> [HourlyForecast] {
+        let cal = Calendar.current
+        return hours.filter { cal.isDate($0.time, inSameDayAs: selection.daily.date) }
+    }
+
+    private var timeFormatter: DateFormatter {
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm"
+        return df
     }
 }
 
