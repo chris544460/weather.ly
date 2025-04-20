@@ -49,6 +49,12 @@ final class AppViewModel: ObservableObject {
         cities.append(city)
         saveCities()
     }
+    
+    /// Delete one or more cities and persist the change
+    func deleteCities(at offsets: IndexSet) {
+        cities.remove(atOffsets: offsets)
+        saveCities()
+    }
 
     func fetchForecasts(for city: City) -> AnyPublisher<[DailyForecast], Error> {
         weatherService.fetchForecast(for: city)
@@ -326,9 +332,14 @@ struct CityListView: View {
     @State private var showingSettings = false
 
     var body: some View {
-        List(viewModel.cities) { city in
-            NavigationLink(value: city) {
-                Text(city.name)
+        List {
+            ForEach(viewModel.cities) { city in
+                NavigationLink(value: city) {
+                    Text(city.name)
+                }
+            }
+            .onDelete { offsets in
+                viewModel.deleteCities(at: offsets)
             }
         }
         .navigationTitle("Cities")
