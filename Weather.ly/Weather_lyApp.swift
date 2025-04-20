@@ -57,8 +57,9 @@ final class AppViewModel: ObservableObject {
         didSet { saveNotificationPrefs() }
     }
 
-    @Published var notifyLeadHours: Int =
-        UserDefaults.standard.object(forKey: AppViewModel.notifyLeadHoursKey) as? Int ?? 2 {
+    /// lead times expressed in hours (can hold several values, e.g. [2, 24, 72])
+    @Published var notifyLeadHours: [Int] =
+        (UserDefaults.standard.array(forKey: AppViewModel.notifyLeadHoursKey) as? [Int]) ?? [24] {
         didSet { saveNotificationPrefs() }
     }
     
@@ -87,6 +88,7 @@ final class AppViewModel: ObservableObject {
     private static let unitsKey    = "savedUnits"
     private static let windowsKey  = "savedWindows"
     private static let notifyEnabledKey   = "notifyEnabled"
+    // savedNotifyLeadHours
     private static let notifyLeadHoursKey = "notifyLeadHours"
 
     init() {
@@ -105,7 +107,7 @@ final class AppViewModel: ObservableObject {
 
     private func saveNotificationPrefs() {
         UserDefaults.standard.set(notificationsEnabled, forKey: Self.notifyEnabledKey)
-        UserDefaults.standard.set(notifyLeadHours,      forKey: Self.notifyLeadHoursKey)
+        UserDefaults.standard.set(notifyLeadHours, forKey: Self.notifyLeadHoursKey)
         rescheduleAll()
     }
 
@@ -114,34 +116,35 @@ final class AppViewModel: ObservableObject {
         guard notificationsEnabled else { return }
 
         let center = UNUserNotificationCenter.current()
-        let lead   = TimeInterval(notifyLeadHours * 3600)
 
         // Clear older requests for this city
         center.removePendingNotificationRequests(
             withIdentifiers: windows.map { "win-\(city.id)-\($0.id)" })
 
-        for w in windows {
-            let fireDate = w.from.addingTimeInterval(-lead)
-            guard fireDate > Date() else { continue }
+        for lead in notifyLeadHours {
+            for w in windows {
+                let fireDate = w.from.addingTimeInterval(TimeInterval(lead * 3600))
+                guard fireDate > Date() else { continue }
 
-            var comps = Calendar.current.dateComponents(
-                [.year, .month, .day, .hour, .minute], from: fireDate)
-            comps.second = 0
+                var comps = Calendar.current.dateComponents(
+                    [.year, .month, .day, .hour, .minute], from: fireDate)
+                comps.second = 0
 
-            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+                let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
 
-            let content = UNMutableNotificationContent()
-            content.title = "Great weather coming!"
-            content.body  = "\(city.name): starts at " +
-                DateFormatter.localizedString(from: w.from,
-                                              dateStyle: .none,
-                                              timeStyle: .short)
-            content.sound = .default
+                let content = UNMutableNotificationContent()
+                content.title = "Great weather coming!"
+                content.body  = "\(city.name): starts at " +
+                    DateFormatter.localizedString(from: w.from,
+                                                  dateStyle: .none,
+                                                  timeStyle: .short)
+                content.sound = .default
 
-            let req = UNNotificationRequest(identifier: "win-\(city.id)-\(w.id)",
-                                            content: content,
-                                            trigger: trigger)
-            center.add(req)
+                let req = UNNotificationRequest(identifier: "win-\(city.id)-\(w.id)",
+                                                content: content,
+                                                trigger: trigger)
+                center.add(req)
+            }
         }
     }
 
@@ -973,14 +976,21 @@ struct SettingsView: View {
             
             Section("Notifications") {
                 Toggle("Enable alerts", isOn: $viewModel.notificationsEnabled)
+                ForEach(viewModel.notifyLeadHours.sorted(), id: \.self) { h in
+                    HStack {
+                        Text(labelForLeadHours(h))
+                        Spacer()
+                    }
+                }
+                .onDelete { indexSet in
+                    viewModel.notifyLeadHours.remove(atOffsets: indexSet)
+                }
                 Button {
                     showLeadPicker = true
                 } label: {
                     HStack {
-                        Text("Alert before")
-                        Spacer()
-                        Text(labelForLeadHours(viewModel.notifyLeadHours))
-                            .foregroundColor(.secondary)
+                        Image(systemName: "plus.circle.fill")
+                        Text("Add alert")
                     }
                 }
             }
@@ -1167,21 +1177,12 @@ private struct LeadTimePickerSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
-                        // convert selection to hours and persist
                         let totalHrs = unit == .hours ? value : value * 24
-                        viewModel.notifyLeadHours = totalHrs
+                        if !viewModel.notifyLeadHours.contains(totalHrs) {
+                            viewModel.notifyLeadHours.append(totalHrs)
+                        }
                         dismiss()
                     }
-                }
-            }
-            .onAppear {
-                // decompose stored hours into closest unit+value
-                if viewModel.notifyLeadHours % 24 == 0 {
-                    unit  = .days
-                    value = max(1, viewModel.notifyLeadHours / 24)
-                } else {
-                    unit  = .hours
-                    value = max(1, viewModel.notifyLeadHours)
                 }
             }
         }
@@ -1191,7 +1192,7 @@ private struct LeadTimePickerSheet: View {
     private func range(for unit: Unit) -> [Int] {
         switch unit {
         case .hours: return Array(1...23)          // 1–23 h
-        case .days:  return Array(1...14)          // 1–14 d (≈ 2 weeks)
+        case .days:  return Array(1...30)          // 1–30 d (up to a month)
         }
     }
 }
