@@ -806,8 +806,8 @@ struct DayDetailView: View {
                                 .foregroundColor(.blue)
                             Spacer()
 
-                            Text("\(Int(h.uvIndex))")
-                                .frame(width: 35, alignment: .trailing)
+                            Text(String(format: "%.1f", h.uvIndex))
+                                .frame(width: 40, alignment: .trailing)
                                 .foregroundColor(.purple)
                         }
                     }
@@ -898,8 +898,8 @@ struct GoodWindowDetailView: View {
                             .frame(width:45,alignment:.trailing)
                             .foregroundColor(.blue)
                         Spacer()
-                        Text("\(Int(h.uvIndex))")
-                            .frame(width: 35, alignment: .trailing)
+                        Text(String(format: "%.1f", h.uvIndex))
+                            .frame(width: 40, alignment: .trailing)
                             .foregroundColor(.purple)
                     }
                 }
