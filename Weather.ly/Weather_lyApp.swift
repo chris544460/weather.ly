@@ -34,7 +34,12 @@ final class AppViewModel: ObservableObject {
     @Published var navigationPath          = NavigationPath()
     @Published var criteria                = DayCriteria()
     /// true = Celsius, false = Fahrenheit
-    @Published var useCelsius: Bool = false
+    @Published var useCelsius: Bool =
+        UserDefaults.standard.object(forKey: AppViewModel.unitsKey) as? Bool ?? false {
+        didSet { saveUnits() }
+    }
+    /// Cached good‑windows keyed by city.id
+    @Published var cachedWindows: [UUID: [GoodWindow]] = [:]
 
     let weatherService = WeatherService()
     var cancellables   = Set<AnyCancellable>()
@@ -49,37 +54,70 @@ final class AppViewModel: ObservableObject {
     }
 
     // MARK: - Persistence (UserDefaults JSON)
-    private let citiesKey    = "savedCities"
-    private let criteriaKey  = "savedCriteria"
+    // inside AppViewModel
+    private static let citiesKey   = "savedCities"
+    private static let criteriaKey = "savedCriteria"
+    private static let unitsKey    = "savedUnits"
+    private static let windowsKey  = "savedWindows"
 
     init() {
         loadCities()
         loadCriteria()
+        loadWindows()
+    }
+
+
+
+
+    private func saveUnits() {
+        UserDefaults.standard.set(useCelsius, forKey: AppViewModel.unitsKey)
     }
 
     private func saveCities() {
         if let data = try? JSONEncoder().encode(cities) {
-            UserDefaults.standard.set(data, forKey: citiesKey)
+            UserDefaults.standard.set(data, forKey: AppViewModel.citiesKey)
         }
     }
 
     private func loadCities() {
-        guard let data = UserDefaults.standard.data(forKey: citiesKey),
+        guard let data = UserDefaults.standard.data(forKey: AppViewModel.citiesKey),
               let decoded = try? JSONDecoder().decode([City].self, from: data) else { return }
         cities = decoded
     }
 
     func saveCriteria() {
         if let data = try? JSONEncoder().encode(criteria) {
-            UserDefaults.standard.set(data, forKey: criteriaKey)
+            UserDefaults.standard.set(data, forKey: AppViewModel.criteriaKey)
         }
     }
 
     private func loadCriteria() {
-        guard let data = UserDefaults.standard.data(forKey: criteriaKey),
+        guard let data = UserDefaults.standard.data(forKey: AppViewModel.criteriaKey),
               let decoded = try? JSONDecoder().decode(DayCriteria.self, from: data) else { return }
         criteria = decoded
     }
+
+    private func saveWindows() {
+        if let data = try? JSONEncoder().encode(cachedWindows) {
+            UserDefaults.standard.set(data, forKey: AppViewModel.windowsKey)
+        }
+    }
+
+    private func loadWindows() {
+        guard let data = UserDefaults.standard.data(forKey: AppViewModel.windowsKey),
+              let decoded = try? JSONDecoder().decode([UUID:[GoodWindow]].self, from: data) else { return }
+        cachedWindows = decoded
+    }
+
+    
+
+
+    func cacheWindows(for city: City, windows: [GoodWindow]) {
+        cachedWindows[city.id] = windows
+        saveWindows()
+    }
+
+
 }
 
 // MARK: – Models
@@ -113,7 +151,7 @@ struct HourlyForecast: Identifiable, Codable, Hashable {
     var precipProb  : Double
 }
 /// Continuous block where every hour meets the user’s criteria
-struct GoodWindow: Identifiable, Hashable {
+struct GoodWindow: Identifiable, Codable, Hashable {
     let id          = UUID()
     let from        : Date
     let to          : Date
@@ -380,6 +418,9 @@ struct CalendarView: View {
             }
         }
         .onAppear {
+            // show cached windows, if any, immediately
+            goodWindows = viewModel.cachedWindows[city.id] ?? []
+
             viewModel.fetchForecasts(for: city)
                 .sink(receiveCompletion: { result in
                     if case .failure(let err) = result {
@@ -406,13 +447,15 @@ struct CalendarView: View {
                         }
                 })
                 .store(in: &cancellables)
-            
+
             // ---- fetch hourly to build good windows ----
             viewModel.weatherService.fetchHourly(for: city)
                 .receive(on: DispatchQueue.main)
                 .catch { _ in Just([]) }
                 .sink { hrs in
-                    goodWindows = computeGoodWindows(from: hrs)
+                    let wins = computeGoodWindows(from: hrs)
+                    goodWindows = wins
+                    viewModel.cacheWindows(for: city, windows: wins)
                 }
                 .store(in: &cancellables)
         }
@@ -486,7 +529,19 @@ struct DayDetailView: View {
 
     var body: some View {
         List {
-        if hours.isEmpty {
+            // column headers
+            HStack {
+                Text("Time").frame(width: 55, alignment: .leading)
+                Spacer()
+                Text("Temp").frame(width: 55, alignment: .trailing)
+                Spacer()
+                Text("RH").frame(width: 45, alignment: .trailing)
+                Spacer()
+                Text("Rain").frame(width: 45, alignment: .trailing)
+            }
+            .font(.caption.bold())
+            .foregroundColor(.secondary)
+            if hours.isEmpty {
                 ProgressView("Loading…")
                     .frame(maxWidth: .infinity, alignment: .center)
             } else if hoursForDay().isEmpty {
@@ -563,6 +618,18 @@ struct GoodWindowDetailView: View {
 
     var body: some View {
         List {
+            // column headers
+            HStack {
+                Text("Time").frame(width: 55, alignment: .leading)
+                Spacer()
+                Text("Temp").frame(width: 55, alignment: .trailing)
+                Spacer()
+                Text("RH").frame(width: 45, alignment: .trailing)
+                Spacer()
+                Text("Rain").frame(width: 45, alignment: .trailing)
+            }
+            .font(.caption.bold())
+            .foregroundColor(.secondary)
             Section(header: Text(title).font(.headline)) {
                 ForEach(filteredHours()) { h in
                     HStack {
