@@ -153,7 +153,8 @@ private extension Collection {
 // 1. City List
 struct CityListView: View {
     @EnvironmentObject var viewModel: AppViewModel
-    @State private var showingAdd = false
+    @State private var showingAdd      = false
+    @State private var showingSettings = false
 
     var body: some View {
         List(viewModel.cities) { city in
@@ -163,12 +164,26 @@ struct CityListView: View {
         }
         .navigationTitle("Cities")
         .toolbar {
-            Button { showingAdd = true } label: {
-                Image(systemName: "plus")
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button {
+                    showingSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                Button {
+                    showingAdd = true
+                } label: {
+                    Image(systemName: "plus")
+                }
             }
         }
         .sheet(isPresented: $showingAdd) {
-            AddCityView().environmentObject(viewModel)
+            AddCityView()
+                .environmentObject(viewModel)
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
+                .environmentObject(viewModel)
         }
     }
 }
@@ -194,6 +209,7 @@ struct CalendarView: View {
                         Text("\(Int(f.temperature))°")
                     }
                 }
+                .listRowBackground(f.isGoodDay ? Color.green.opacity(0.25) : Color.clear)
             }
 
             if let err = errorMessage {
@@ -207,7 +223,22 @@ struct CalendarView: View {
                         errorMessage = err.localizedDescription
                     }
                 }, receiveValue: { data in
+                    let crit = viewModel.criteria
                     forecasts = data
+                        .map { day -> DailyForecast in
+                            var d = day
+                            let tempOK  = d.temperature >= crit.tempMin && d.temperature <= crit.tempMax
+                            let humidOK = d.humidity   <= crit.humidityMax
+                            let rainOK  = crit.precipitationAllowed || d.precipitationProbability < 20
+                            d.isGoodDay = tempOK && humidOK && rainOK
+                            return d
+                        }
+                        .sorted {    // good days first, then chronological
+                            if $0.isGoodDay == $1.isGoodDay {
+                                return $0.date < $1.date
+                            }
+                            return $0.isGoodDay && !$1.isGoodDay
+                        }
                 })
                 .store(in: &cancellables)
         }
