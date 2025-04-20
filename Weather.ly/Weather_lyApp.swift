@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import MapKit
 
 // MARK: – App entry
 @main
@@ -720,47 +721,86 @@ struct GoodWindowDetailView: View {
     private var timeFmt: DateFormatter { let d=DateFormatter(); d.dateFormat="HH:mm"; return d }
 }
 
-// 4. Add City View
-// 4. Add City View  – pre‑defined list, no typing
+// MARK: - City search view‑model (autocomplete via MapKit)
+final class CitySearchViewModel: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var query: String = "" {
+        didSet { completer.queryFragment = query }
+    }
+    @Published var results: [MKLocalSearchCompletion] = []
+
+    private let completer: MKLocalSearchCompleter
+
+    override init() {
+        completer = MKLocalSearchCompleter()
+        super.init()
+        completer.resultTypes = .address         // limit to address‑like results
+        completer.delegate = self                // observe updates via delegate
+    }
+
+    /// Resolve the selected completion into a `City` and return via callback
+    func select(_ completion: MKLocalSearchCompletion, completionHandler: @escaping (City) -> Void) {
+        let request = MKLocalSearch.Request(completion: completion)
+        let search  = MKLocalSearch(request: request)
+        search.start { response, _ in
+            guard let item = response?.mapItems.first else { return }
+            let coord = item.placemark.coordinate
+            let name  = item.placemark.locality ??
+                        item.placemark.name ??
+                        completion.title
+            let city  = City(name: name,
+                             latitude: coord.latitude,
+                             longitude: coord.longitude)
+            DispatchQueue.main.async {
+                completionHandler(city)
+            }
+        }
+    }
+    
+    // MARK: - MKLocalSearchCompleterDelegate
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        DispatchQueue.main.async {
+            self.results = completer.results
+        }
+    }
+
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        DispatchQueue.main.async {
+            self.results = []   // clear results on error
+        }
+    }
+}
+// 4. Add City View – live autocomplete
 struct AddCityView: View {
     @EnvironmentObject var viewModel: AppViewModel
-    @Environment(\.presentationMode) var presentation
-
-    /// Pre‑made list of popular cities (add more as you like)
-    private let sampleCities: [City] = [
-        City(name: "New York",    latitude: 40.7128, longitude: -74.0060),
-        City(name: "Los Angeles", latitude: 34.0522, longitude: -118.2437),
-        City(name: "Chicago",     latitude: 41.8781, longitude:  -87.6298),
-        City(name: "London",      latitude: 51.5074, longitude:   -0.1278),
-        City(name: "Paris",       latitude: 48.8566, longitude:     2.3522),
-        City(name: "Tokyo",       latitude: 35.6895, longitude:   139.6917)
-    ]
-
-    @State private var selectionIndex = 0
-
+    @Environment(\.dismiss) var dismiss
+    @StateObject private var search = CitySearchViewModel()
+    
     var body: some View {
         NavigationStack {
-            Form {
-                Picker("Select a city", selection: $selectionIndex) {
-                    ForEach(sampleCities.indices, id: \.self) { i in
-                        Text(sampleCities[i].name).tag(i)
+            List {
+                TextField("Search city", text: $search.query)
+                    .textInputAutocapitalization(.words)
+                    .disableAutocorrection(true)
+                
+                ForEach(search.results, id: \.self) { comp in
+                    Button {
+                        search.select(comp) { city in
+                            viewModel.addCity(city)
+                            dismiss()
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(comp.title)
+                            if !comp.subtitle.isEmpty {
+                                Text(comp.subtitle)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                     }
                 }
-                .pickerStyle(.wheel)
             }
             .navigationTitle("Add City")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        let city = sampleCities[selectionIndex]
-                        viewModel.addCity(city)
-                        presentation.wrappedValue.dismiss()
-                    }
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { presentation.wrappedValue.dismiss() }
-                }
-            }
         }
     }
 }
@@ -952,3 +992,4 @@ private struct ValuePickerSheet: View {
 extension SettingsView.PickerKind: Identifiable {
     var id: Int { hashValue }
 }
+
