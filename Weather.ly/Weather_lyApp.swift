@@ -256,6 +256,7 @@ struct DayCriteria: Codable {
     var tempMax               : Double = 75
     var humidityMax           : Double = 60
     var uvMax                 : Double = 8
+    var cloudCoverMax: Double = 50
     var precipitationAllowed  : Bool   = false
 }
 
@@ -275,6 +276,7 @@ struct HourlyForecast: Identifiable, Codable, Hashable {
     var humidity    : Double
     var precipProb  : Double
     var uvIndex     : Double
+    var cloudCover : Double
 }
 /// Continuous block where every hour meets the user’s criteria
 struct GoodWindow: Identifiable, Codable, Hashable {
@@ -289,6 +291,7 @@ struct GoodWindow: Identifiable, Codable, Hashable {
     var plan: String? = nil
     /// Set `true` once the user explicitly decides to skip this window
     var skipped: Bool = false
+    let maxCloud : Double
 }
 
 /// Wrapper used for navigation so we know which city the daily forecast belongs to
@@ -329,7 +332,7 @@ final class WeatherService {
         comps?.queryItems = [
             .init(name: "latitude",  value: String(city.latitude)),
             .init(name: "longitude", value: String(city.longitude)),
-            .init(name: "hourly",    value: "temperature_2m,relative_humidity_2m,precipitation_probability,uv_index"),
+            .init(name: "hourly",    value: "temperature_2m,relative_humidity_2m,precipitation_probability,uv_index,cloud_cover_low"),
             .init(name: "forecast_days", value: "16"),
             .init(name: "timezone",  value: "auto")
         ]
@@ -345,6 +348,7 @@ final class WeatherService {
                 let relative_humidity_2m: [Double?]?
                 let precipitation_probability: [Double?]?
                 let uv_index: [Double?]?
+                let cloud_cover_low: [Double?]?
             }
             let hourly: Hourly
         }
@@ -380,6 +384,7 @@ final class WeatherService {
                     let humidity = h.relative_humidity_2m?[safe: i] ?? nil
                     let precip   = h.precipitation_probability?[safe: i] ?? nil
                     let uv = h.uv_index?[safe:i] ?? nil
+                    let cloud = h.cloud_cover_low?[safe:i] ?? nil
 
                     out.append(
                         HourlyForecast(
@@ -387,7 +392,8 @@ final class WeatherService {
                             temperature: temp,
                             humidity: humidity ?? 0,
                             precipProb: precip ?? 0,
-                            uvIndex: uv ?? 0
+                            uvIndex: uv ?? 0,
+                            cloudCover: cloud ?? 0
                         )
                     )
                 }
@@ -563,6 +569,8 @@ struct CalendarView: View {
                                             .font(.caption2).foregroundColor(.secondary)
                                         Text("≤\(Int(w.maxHumidity)) % RH")
                                             .font(.caption2).foregroundColor(.secondary)
+                                        Text("≤\(Int(w.maxCloud)) % Cl")
+                                            .font(.caption2).foregroundColor(.secondary)
                                     }
                                 }
                             }
@@ -710,6 +718,7 @@ struct CalendarView: View {
             return tC >= c.tempMin && tC <= c.tempMax &&
                    h.humidity <= c.humidityMax &&
                    h.uvIndex  <= c.uvMax &&
+                   h.cloudCover  <= c.cloudCoverMax &&
                    (c.precipitationAllowed || h.precipProb < 20)
         }
 
@@ -731,6 +740,8 @@ struct CalendarView: View {
     private func buildWindow(from slice: [HourlyForecast]) -> GoodWindow {
         let tempsC = slice.map { viewModel.useCelsius ? $0.temperature : ($0.temperature - 32) * 5 / 9 }
         let maxUV = slice.map(\.uvIndex).max() ?? 0
+        let maxCloud = slice.map(\.cloudCover).max() ?? 0
+
         return GoodWindow(
             from: slice.first!.time,
             to:   slice.last!.time,
@@ -739,7 +750,8 @@ struct CalendarView: View {
             maxHumidity: slice.map(\.humidity).max() ?? 0,
             maxUV : maxUV,
             plan: nil,
-            skipped: false
+            skipped: false,
+            maxCloud: maxCloud
         )
     }
 
@@ -771,6 +783,8 @@ struct DayDetailView: View {
                 Text("Rain").frame(width: 45, alignment: .trailing)
                 Spacer()
                 Text("UV").frame(width: 35, alignment: .trailing)
+                Spacer()
+                Text("Cl").frame(width: 40, alignment: .trailing)
             }
             .font(.caption.bold())
             .foregroundColor(.secondary)
@@ -805,10 +819,13 @@ struct DayDetailView: View {
                                 .frame(width: 45, alignment: .trailing)
                                 .foregroundColor(.blue)
                             Spacer()
-
                             Text(String(format: "%.1f", h.uvIndex))
-                                .frame(width: 40, alignment: .trailing)
+                                .frame(width: 35, alignment: .trailing)
                                 .foregroundColor(.purple)
+                            Spacer()
+                            Text("\(Int(h.cloudCover)) %")
+                                .frame(width: 40, alignment: .trailing)
+                                .foregroundColor(.teal)
                         }
                     }
                 }
@@ -876,33 +893,39 @@ struct GoodWindowDetailView: View {
                 Text("Rain").frame(width: 45, alignment: .trailing)
                 Spacer()
                 Text("UV").frame(width: 35, alignment: .trailing)
+                Spacer()
+                Text("Cl").frame(width: 40, alignment: .trailing)
             }
             .font(.caption.bold())
             .foregroundColor(.secondary)
             Section(header: Text(title).font(.headline)) {
-                ForEach(filteredHours()) { h in
-                    HStack {
-                        Text(timeFmt.string(from: h.time))
-                            .frame(width:55,alignment:.leading)
-                        Spacer()
-                        let shown = viewModel.useCelsius ? h.temperature : h.temperature*9/5+32
-                        let unit  = viewModel.useCelsius ? "°C":"°F"
-                        Text("\(Int(shown))\(unit)")
-                            .frame(width:55,alignment:.trailing)
-                        Spacer()
-                        Text("\(Int(h.humidity)) %")
-                            .frame(width:45,alignment:.trailing)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("\(Int(h.precipProb)) %")
-                            .frame(width:45,alignment:.trailing)
-                            .foregroundColor(.blue)
-                        Spacer()
-                        Text(String(format: "%.1f", h.uvIndex))
-                            .frame(width: 40, alignment: .trailing)
-                            .foregroundColor(.purple)
+                    ForEach(filteredHours()) { h in
+                        HStack {
+                            Text(timeFmt.string(from: h.time))
+                                .frame(width:55,alignment:.leading)
+                            Spacer()
+                            let shown = viewModel.useCelsius ? h.temperature : h.temperature*9/5+32
+                            let unit  = viewModel.useCelsius ? "°C":"°F"
+                            Text("\(Int(shown))\(unit)")
+                                .frame(width:55,alignment:.trailing)
+                            Spacer()
+                            Text("\(Int(h.humidity)) %")
+                                .frame(width:45,alignment:.trailing)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(Int(h.precipProb)) %")
+                                .frame(width:45,alignment:.trailing)
+                                .foregroundColor(.blue)
+                            Spacer()
+                            Text(String(format: "%.1f", h.uvIndex))
+                                .frame(width: 40, alignment: .trailing)
+                                .foregroundColor(.purple)
+                            Spacer()
+                            Text("\(Int(h.cloudCover)) %")
+                                .frame(width: 40, alignment: .trailing)
+                                .foregroundColor(.teal)
+                        }
                     }
-                }
             }
             // ---------- Plan ----------
             Section(header: Text("Plan")) {
@@ -1059,7 +1082,7 @@ struct SettingsView: View {
     // Which picker is currently shown
     @State private var activePicker: PickerKind?
     @State private var showLeadPicker = false
-    enum PickerKind { case minTemp, maxTemp, humidity, uv }
+    enum PickerKind { case minTemp, maxTemp, humidity, uv, cloud }
 
     var body: some View {
         Form {
@@ -1107,6 +1130,14 @@ struct SettingsView: View {
                     HStack { Text("Max UV Index"); Spacer()
                              Text("\(Int(viewModel.criteria.uvMax))")
                                  .foregroundColor(.secondary) }
+                }
+                
+                // -- Max cloud cover
+                Button { activePicker = .cloud } label: {
+                    HStack { Text("Max Cloud %")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.cloudCoverMax)) %")
+                            .foregroundColor(.secondary) }
                 }
 
                 Toggle("Allow Precipitation",
@@ -1193,6 +1224,7 @@ private struct ValuePickerSheet: View {
     @State private var tempValue: Double = 0
     @State private var humidityValue: Double = 0
     @State private var uvValue: Double = 0
+    @State private var cloudValue: Double = 0
 
     var body: some View {
         NavigationStack {
@@ -1216,6 +1248,7 @@ private struct ValuePickerSheet: View {
                 case .maxTemp:    tempValue = viewModel.criteria.tempMax
                 case .humidity:   humidityValue = viewModel.criteria.humidityMax
                 case .uv:       uvValue      = viewModel.criteria.uvMax
+                case .cloud:   cloudValue = viewModel.criteria.cloudCoverMax
                 @unknown default: break
                 }
             }
@@ -1254,9 +1287,17 @@ private struct ValuePickerSheet: View {
                     viewModel.criteria.uvMax = new
                     viewModel.saveCriteria()
                 })
+            
+        case .cloud:
+            return Binding(get:{ cloudValue }, set:{ new in
+                cloudValue = new
+                viewModel.criteria.cloudCoverMax = new
+                viewModel.saveCriteria()
+            })
 
         @unknown default:
             fatalError("Unhandled picker kind")
+        
         }
     }
 
@@ -1266,8 +1307,10 @@ private struct ValuePickerSheet: View {
         case .humidity:
             return "\(Int(v)) %"
         case .uv:       return "\(Int(v))"
+        case .cloud:   return "\(Int(v)) %"
         default:
             return "\(Int(v))°"
+        
         }
     }
 
@@ -1278,6 +1321,7 @@ private struct ValuePickerSheet: View {
         case .maxTemp:  return "Max Temp"
         case .humidity: return "Max Humidity %"
         case .uv:       return "Max UV Index"
+        case .cloud:   return "Max Cloud %"
         }
     }
 
@@ -1288,6 +1332,7 @@ private struct ValuePickerSheet: View {
             return Array(0...100).map { Double($0) }
         case .uv:
             return Array(0...11).map { Double($0) }
+        case .cloud:   return Array(0...100).map(Double.init)
         default:
             if viewModel.useCelsius {
                 return Array(-20...40).map { Double($0) }
@@ -1314,6 +1359,8 @@ private struct LeadTimePickerSheet: View {
     // editable state
     @State private var value: Int = 1
     @State private var unit: Unit = .hours       // h / d
+    
+    
 
     var body: some View {
         NavigationStack {
