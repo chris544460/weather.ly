@@ -140,9 +140,21 @@ final class AppViewModel: ObservableObject {
                                                   timeStyle: .short)
                 content.sound = .default
 
-                let req = UNNotificationRequest(identifier: "win-\(city.id)-\(w.id)",
-                                                content: content,
-                                                trigger: trigger)
+                if let plan = w.plan {
+                    content.title = plan
+                    content.body  = "\(city.name) – starts " +
+                        DateFormatter.localizedString(from: w.from,
+                                                      dateStyle: .none,
+                                                      timeStyle: .short)
+                } else {
+                    content.title = "Great weather coming!"
+                    content.body  = "\(city.name) – you haven’t planned anything yet"
+                }
+                
+                let reqID = "win-\(city.id)-\(w.id)-\(lead)h"
+                let req   = UNNotificationRequest(identifier:reqID,
+                                                  content: content,
+                                                  trigger: trigger)
                 center.add(req)
             }
         }
@@ -250,6 +262,10 @@ struct GoodWindow: Identifiable, Codable, Hashable {
     let minTemp     : Double   // stored in °C
     let maxTemp     : Double
     let maxHumidity : Double
+    /// Optional user plan for this window
+    var plan: String? = nil
+    /// Set `true` once the user explicitly decides to skip this window
+    var skipped: Bool = false
 }
 
 /// Wrapper used for navigation so we know which city the daily forecast belongs to
@@ -579,9 +595,27 @@ struct CalendarView: View {
                 .receive(on: DispatchQueue.main)
                 .catch { _ in Just([]) }
                 .sink { hrs in
-                    let wins = computeGoodWindows(from: hrs)
-                    goodWindows = wins
-                    viewModel.cacheWindows(for: city, windows: wins)
+                    // 1. Compute fresh windows from latest hourly data
+                    let fresh = computeGoodWindows(from: hrs)
+
+                    // 2. Merge with any persisted windows to keep plan / skipped flags
+                    let previous = viewModel.cachedWindows[city.id] ?? []
+                    let merged: [GoodWindow] = fresh.map { new in
+                        if let old = previous.first(where: {
+                            abs($0.from.timeIntervalSince(new.from)) < 60 &&
+                            abs($0.to.timeIntervalSince(new.to))   < 60
+                        }) {
+                            var n = new
+                            n.plan    = old.plan
+                            n.skipped = old.skipped
+                            return n
+                        }
+                        return new
+                    }
+
+                    // 3. Update UI and persist
+                    goodWindows = merged
+                    viewModel.cacheWindows(for: city, windows: merged)
                     isLoadingGoodWindows = false
                 }
                 .store(in: &cancellables)
@@ -656,7 +690,9 @@ struct CalendarView: View {
             to:   slice.last!.time,
             minTemp: tempsC.min() ?? 0,
             maxTemp: tempsC.max() ?? 0,
-            maxHumidity: slice.map(\.humidity).max() ?? 0
+            maxHumidity: slice.map(\.humidity).max() ?? 0,
+            plan: nil,
+            skipped: false
         )
     }
 
@@ -758,11 +794,18 @@ struct DayDetailView: View {
 struct GoodWindowDetailView: View {
     @EnvironmentObject var viewModel: AppViewModel
     let city: City
-    let window: GoodWindow
+    
 
     @State private var hours: [HourlyForecast] = []
     @State private var cans  = Set<AnyCancellable>()
     @State private var showSettings = false
+    @State private var window: GoodWindow
+    @State private var planText: String = ""
+
+    init(city: City, window: GoodWindow) {
+        self.city = city
+        _window   = State(initialValue: window)
+    }
 
     var body: some View {
         List {
@@ -799,6 +842,37 @@ struct GoodWindowDetailView: View {
                     }
                 }
             }
+            // ---------- Plan ----------
+            Section(header: Text("Plan")) {
+                if window.plan == nil && !window.skipped {
+                    TextField("What will you do?", text: $planText)
+                        .textInputAutocapitalization(.sentences)
+                    Button("Save plan") {
+                        window.plan = planText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        persistWindow()
+                    }
+                    .disabled(planText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button("Skip this window") {
+                        window.skipped = true
+                        persistWindow()
+                    }
+                    .tint(.red)
+                } else if let p = window.plan {
+                    Text(p)
+                    Button("Edit") {
+                        planText = p
+                        window.plan = nil
+                    }
+                } else {                // skipped
+                    Text("Marked as skipped").foregroundColor(.secondary)
+                    Button("Re‑activate") {
+                        window.skipped = false
+                        persistWindow()
+                    }
+                }
+            }
+            
             Button("Change criteria") { showSettings = true }
                 .frame(maxWidth:.infinity,alignment:.center)
         }
@@ -811,6 +885,15 @@ struct GoodWindowDetailView: View {
                 .catch { _ in Just([]) }
                 .sink { hours = $0 }
                 .store(in: &cans)
+        }
+    }
+    
+    private func persistWindow() {
+        if var list = viewModel.cachedWindows[city.id],
+           let idx = list.firstIndex(where: { $0.id == window.id }) {
+            list[idx] = window
+            // `cacheWindows` updates UserDefaults *and* reschedules notifications.
+            viewModel.cacheWindows(for: city, windows: list)
         }
     }
 
