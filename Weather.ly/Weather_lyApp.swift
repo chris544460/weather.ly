@@ -63,6 +63,28 @@ final class AppViewModel: ObservableObject {
         didSet { saveNotificationPrefs() }
     }
     
+    // new @Published properties (place with the other @Published vars)
+    // MARK: – Published work‑hours prefs
+    @Published var workStartHour: Int? =
+        UserDefaults.standard.object(forKey: AppViewModel.workStartKey) as? Int {
+        didSet { saveWorkHours() }   // ← uppercase W
+    }
+
+    @Published var workEndHour: Int? =
+        UserDefaults.standard.object(forKey: AppViewModel.workEndKey) as? Int {
+        didSet { saveWorkHours() }   // ← uppercase W
+    }
+
+    // …
+    
+    private func saveWorkHours() {
+        UserDefaults.standard.set(workStartHour, forKey: AppViewModel.workStartKey)
+        UserDefaults.standard.set(workEndHour,   forKey: AppViewModel.workEndKey)
+    }
+
+    
+
+    
     /// Delete one or more cities and persist the change
     func deleteCities(at offsets: IndexSet) {
         for idx in offsets {
@@ -90,6 +112,9 @@ final class AppViewModel: ObservableObject {
     private static let notifyEnabledKey   = "notifyEnabled"
     // savedNotifyLeadHours
     private static let notifyLeadHoursKey = "notifyLeadHours"
+    // new keys (put near the other static keys)
+    private static let workStartKey = "workStartHour"
+    private static let workEndKey   = "workEndHour"
 
     init() {
         loadCities()
@@ -111,6 +136,7 @@ final class AppViewModel: ObservableObject {
         UserDefaults.standard.set(notifyLeadHours, forKey: Self.notifyLeadHoursKey)
         rescheduleAll()
     }
+    
 
     /// Schedule alerts for every good‑weather window of one city
     func scheduleNotifications(for city: City, windows: [GoodWindow]) {
@@ -292,6 +318,22 @@ struct GoodWindow: Identifiable, Codable, Hashable {
     /// Set `true` once the user explicitly decides to skip this window
     var skipped: Bool = false
     let maxCloud : Double
+}
+// MARK: - GoodWindow helpers
+extension GoodWindow {
+    /// Return a copy of the same window but with a different time span,
+    /// preserving all statistics, plan text and skipped flag.
+    func copy(from newFrom: Date, to newTo: Date) -> GoodWindow {
+        GoodWindow(from: newFrom,
+                   to: newTo,
+                   minTemp: minTemp,
+                   maxTemp: maxTemp,
+                   maxHumidity: maxHumidity,
+                   maxUV: maxUV,
+                   plan: plan,
+                   skipped: skipped,
+                   maxCloud: maxCloud)
+    }
 }
 
 /// Wrapper used for navigation so we know which city the daily forecast belongs to
@@ -703,8 +745,16 @@ struct CalendarView: View {
             let hour = cal.component(.hour, from: w.from)
             return hour >= 17
         }
+        if let s = viewModel.workStartHour,
+           let e = viewModel.workEndHour {
+            let h0 = Calendar.current.component(.hour, from: w.from)
+            let h1 = Calendar.current.component(.hour, from: w.to)
+            if h1 <= s || h0 >= e { return true }
+        }
         return false
     }
+    
+    
  
     // MARK: - Good window detection
     private func computeGoodWindows(from hours: [HourlyForecast]) -> [GoodWindow] {
@@ -734,6 +784,10 @@ struct CalendarView: View {
             }
         }
         if let s = start { out.append(buildWindow(from: Array(hours[s...]))) }
+        if let s = viewModel.workStartHour,
+           let e = viewModel.workEndHour {
+            return splitWindows(out, workStart: s, workEnd: e)
+        }
         return out
     }
 
@@ -753,6 +807,45 @@ struct CalendarView: View {
             skipped: false,
             maxCloud: maxCloud
         )
+    }
+    
+    /// keep only the before‑work and/or after‑work pieces
+    /// break any window that overlaps work hours into [before][during][after]
+    private func splitWindows(_ wins: [GoodWindow],
+                              workStart s: Int,
+                              workEnd   e: Int) -> [GoodWindow] {
+
+        var out: [GoodWindow] = []
+        let cal = Calendar.current
+
+        func stamp(_ ref: Date, h: Int) -> Date {
+            cal.date(bySettingHour: h, minute: 0, second: 0,
+                     of: cal.startOfDay(for: ref))!
+        }
+
+        for w in wins {
+            let ws = stamp(w.from, h: s)   // e.g. 09:00
+            let we = stamp(w.from, h: e)   // e.g. 17:00
+
+            // window falls completely outside work hours – keep as‑is
+            if w.to <= ws || w.from >= we { out.append(w); continue }
+
+            // before‑work slice
+            if w.from < ws {
+                out.append(w.copy(from: w.from, to: ws))
+            }
+
+            // **** work‑hours slice (always keep) ****
+            let midFrom = max(w.from, ws)
+            let midTo   = min(w.to,   we)
+            out.append(w.copy(from: midFrom, to: midTo))
+
+            // after‑work slice
+            if w.to > we {
+                out.append(w.copy(from: we, to: w.to))
+            }
+        }
+        return out.sorted { $0.from < $1.from }
     }
 
     private var dateFmt: DateFormatter {
@@ -1082,7 +1175,7 @@ struct SettingsView: View {
     // Which picker is currently shown
     @State private var activePicker: PickerKind?
     @State private var showLeadPicker = false
-    enum PickerKind { case minTemp, maxTemp, humidity, uv, cloud }
+    enum PickerKind { case minTemp, maxTemp, humidity, uv, cloud, workStart, workEnd }
 
     var body: some View {
         Form {
@@ -1145,6 +1238,23 @@ struct SettingsView: View {
                     .onChange(of: viewModel.criteria.precipitationAllowed) { _ in
                         viewModel.saveCriteria()
                     }
+                
+                Section("Work Hours") {
+                    Button {
+                        activePicker = .workStart
+                    } label: {
+                        HStack { Text("Start"); Spacer()
+                            Text(viewModel.workStartHour.map { "\($0):00" } ?? "—")
+                                .foregroundColor(.secondary) }
+                    }
+                    Button {
+                        activePicker = .workEnd
+                    } label: {
+                        HStack { Text("End"); Spacer()
+                            Text(viewModel.workEndHour.map { "\($0):00" } ?? "—")
+                                .foregroundColor(.secondary) }
+                    }
+                }
             }
 
             Section("Units") {
@@ -1225,6 +1335,7 @@ private struct ValuePickerSheet: View {
     @State private var humidityValue: Double = 0
     @State private var uvValue: Double = 0
     @State private var cloudValue: Double = 0
+    @State private var hourValue: Double = 9
 
     var body: some View {
         NavigationStack {
@@ -1239,7 +1350,18 @@ private struct ValuePickerSheet: View {
             .navigationTitle(title)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button("Done") {
+                        // ---- commit hour picker even if user didn't scroll ----
+                        switch kind {
+                        case .workStart:
+                            viewModel.workStartHour = Int(hourValue)
+                        case .workEnd:
+                            viewModel.workEndHour   = Int(hourValue)
+                        default:
+                            break                 // other pickers already saved via binding
+                        }
+                        dismiss()
+                    }
                 }
             }
             .onAppear {
@@ -1249,6 +1371,8 @@ private struct ValuePickerSheet: View {
                 case .humidity:   humidityValue = viewModel.criteria.humidityMax
                 case .uv:       uvValue      = viewModel.criteria.uvMax
                 case .cloud:   cloudValue = viewModel.criteria.cloudCoverMax
+                case .workStart: hourValue = Double(viewModel.workStartHour ?? 9)
+                case .workEnd:   hourValue = Double(viewModel.workEndHour ?? 17)
                 @unknown default: break
                 }
             }
@@ -1294,6 +1418,12 @@ private struct ValuePickerSheet: View {
                 viewModel.criteria.cloudCoverMax = new
                 viewModel.saveCriteria()
             })
+        case .workStart:
+            return Binding(get:{ hourValue },
+                           set:{ hourValue = $0; viewModel.workStartHour = Int($0) })
+        case .workEnd:
+            return Binding(get:{ hourValue },
+                           set:{ hourValue = $0; viewModel.workEndHour = Int($0) })
 
         @unknown default:
             fatalError("Unhandled picker kind")
@@ -1308,6 +1438,7 @@ private struct ValuePickerSheet: View {
             return "\(Int(v)) %"
         case .uv:       return "\(Int(v))"
         case .cloud:   return "\(Int(v)) %"
+        case .workStart, .workEnd: return "\(Int(v)):00"
         default:
             return "\(Int(v))°"
         
@@ -1322,6 +1453,8 @@ private struct ValuePickerSheet: View {
         case .humidity: return "Max Humidity %"
         case .uv:       return "Max UV Index"
         case .cloud:   return "Max Cloud %"
+        case .workStart: return "Work starts"
+        case .workEnd:   return "Work ends"
         }
     }
 
@@ -1333,6 +1466,7 @@ private struct ValuePickerSheet: View {
         case .uv:
             return Array(0...11).map { Double($0) }
         case .cloud:   return Array(0...100).map(Double.init)
+        case .workStart, .workEnd: return Array(0...23).map(Double.init)
         default:
             if viewModel.useCelsius {
                 return Array(-20...40).map { Double($0) }
