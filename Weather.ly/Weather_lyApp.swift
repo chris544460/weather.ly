@@ -465,6 +465,12 @@ final class WeatherService {
         df.dateFormat = "yyyy-MM-dd"
         return df
     }()
+
+    /// Fetches hourly temperature percentiles (stubbed)
+    func fetchHourlyPercentiles(for city: City, window: GoodWindow) -> AnyPublisher<[HourlyPercentile], Never> {
+        // TODO: implement Tomorrow.io percentiles API
+        return Just([]).eraseToAnyPublisher()
+    }
 }
 
 // MARK: – Open‑Meteo response mapping
@@ -505,6 +511,19 @@ private extension Collection {
 }
 
 // MARK: – Views
+/// Represents a temperature percentile for an hourly forecast
+struct HourlyPercentile: Identifiable, Decodable {
+    let time: Date
+    let tempP5: Double
+    let tempP10: Double
+    let tempP25: Double
+    let median: Double
+    let tempP75: Double
+    let tempP90: Double
+    let tempP95: Double
+    var id: Date { time }
+}
+
 // 1. City List
 struct CityListView: View {
     @EnvironmentObject var viewModel: AppViewModel
@@ -960,12 +979,13 @@ struct DayDetailView: View {
 struct GoodWindowDetailView: View {
     @EnvironmentObject var viewModel: AppViewModel
     let city: City
-    
 
     @State private var hours: [HourlyForecast] = []
     @State private var cans  = Set<AnyCancellable>()
     @State private var showSettings = false
     @State private var window: GoodWindow
+    // holds the API‐returned percentile distribution for this window
+    @State private var percentiles: [HourlyPercentile] = []
     @State private var planText: String = ""
 
     init(city: City, window: GoodWindow) {
@@ -992,33 +1012,97 @@ struct GoodWindowDetailView: View {
             .font(.caption.bold())
             .foregroundColor(.secondary)
             Section(header: Text(title).font(.headline)) {
-                    ForEach(filteredHours()) { h in
+                ForEach(filteredHours()) { h in
+                    HStack {
+                        Text(timeFmt.string(from: h.time))
+                            .frame(width:55,alignment:.leading)
+                        Spacer()
+                        let shown = viewModel.useCelsius ? h.temperature : h.temperature*9/5+32
+                        let unit  = viewModel.useCelsius ? "°C":"°F"
+                        Text("\(Int(shown))\(unit)")
+                            .frame(width:55,alignment:.trailing)
+                        Spacer()
+                        Text("\(Int(h.humidity)) %")
+                            .frame(width:45,alignment:.trailing)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(Int(h.precipProb)) %")
+                            .frame(width:45,alignment:.trailing)
+                            .foregroundColor(.blue)
+                        Spacer()
+                        Text(String(format: "%.1f", h.uvIndex))
+                            .frame(width: 40, alignment: .trailing)
+                            .foregroundColor(.purple)
+                        Spacer()
+                        Text("\(Int(h.cloudCover)) %")
+                            .frame(width: 40, alignment: .trailing)
+                            .foregroundColor(.teal)
+                    }
+                }
+            }
+            // MARK: - Temperature percentiles
+            Section(header: Text("Percentiles Table (Temperature")) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                  VStack(spacing: 0) {
+                    // Header row
+                    HStack {
+                        Text("Time").frame(width: 55, alignment: .leading)
+                        Spacer()
+                        Text("5th").frame(width: 55, alignment: .trailing)
+                        Spacer()
+                        Text("10th").frame(width: 55, alignment: .trailing)
+                        Spacer()
+                        Text("25th").frame(width: 55, alignment: .trailing)
+                        Spacer()
+                        Text("50th").frame(width: 55, alignment: .trailing)
+                        Spacer()
+                        Text("75th").frame(width: 55, alignment: .trailing)
+                        Spacer()
+                        Text("90th").frame(width: 55, alignment: .trailing)
+                        Spacer()
+                        Text("95th").frame(width: 55, alignment: .trailing)
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    Divider()
+                    ForEach(percentiles) { p in
                         HStack {
-                            Text(timeFmt.string(from: h.time))
-                                .frame(width:55,alignment:.leading)
+                            Text(timeFmt.string(from: p.time))
+                                .frame(width: 55, alignment: .leading)
                             Spacer()
-                            let shown = viewModel.useCelsius ? h.temperature : h.temperature*9/5+32
-                            let unit  = viewModel.useCelsius ? "°C":"°F"
-                            Text("\(Int(shown))\(unit)")
-                                .frame(width:55,alignment:.trailing)
-                            Spacer()
-                            Text("\(Int(h.humidity)) %")
-                                .frame(width:45,alignment:.trailing)
+                            Text("\(Int(p.tempP5))\(viewModel.useCelsius ? "°C" : "°F")")
+                                .frame(width: 55, alignment: .trailing)
                                 .foregroundColor(.secondary)
                             Spacer()
-                            Text("\(Int(h.precipProb)) %")
-                                .frame(width:45,alignment:.trailing)
-                                .foregroundColor(.blue)
+                            Text("\(Int(p.tempP10))\(viewModel.useCelsius ? "°C" : "°F")")
+                                .frame(width: 55, alignment: .trailing)
+                                .foregroundColor(.secondary)
                             Spacer()
-                            Text(String(format: "%.1f", h.uvIndex))
-                                .frame(width: 40, alignment: .trailing)
-                                .foregroundColor(.purple)
+                            Text("\(Int(p.tempP25))\(viewModel.useCelsius ? "°C" : "°F")")
+                                .frame(width: 55, alignment: .trailing)
+                                .foregroundColor(.secondary)
                             Spacer()
-                            Text("\(Int(h.cloudCover)) %")
-                                .frame(width: 40, alignment: .trailing)
-                                .foregroundColor(.teal)
+                            Text("\(Int(p.median))\(viewModel.useCelsius ? "°C" : "°F")")
+                                .frame(width: 55, alignment: .trailing)
+                            Spacer()
+                            Text("\(Int(p.tempP75))\(viewModel.useCelsius ? "°C" : "°F")")
+                                .frame(width: 55, alignment: .trailing)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(Int(p.tempP90))\(viewModel.useCelsius ? "°C" : "°F")")
+                                .frame(width: 55, alignment: .trailing)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(Int(p.tempP95))\(viewModel.useCelsius ? "°C" : "°F")")
+                                .frame(width: 55, alignment: .trailing)
+                                .foregroundColor(.secondary)
                         }
+                        .font(.caption)
+                        Divider()
                     }
+                  }
+                  .padding(.vertical, 4)
+                }
             }
             // ---------- Plan ----------
             Section(header: Text("Plan")) {
@@ -1050,7 +1134,7 @@ struct GoodWindowDetailView: View {
                     }
                 }
             }
-            
+
             Button("Change criteria") { showSettings = true }
                 .frame(maxWidth:.infinity,alignment:.center)
         }
@@ -1058,14 +1142,32 @@ struct GoodWindowDetailView: View {
             SettingsView().environmentObject(viewModel)
         }
         .onAppear {
+            // Fetch raw hourly forecasts for this city
             viewModel.weatherService.fetchHourly(for: city)
                 .receive(on: DispatchQueue.main)
                 .catch { _ in Just([]) }
-                .sink { hours = $0 }
+                .sink { fetched in
+                    // Store all fetched hours
+                    hours = fetched
+                    // Build a simple percentile stub for each hour in this window
+                    let inWindow = fetched.filter { $0.time >= window.from && $0.time <= window.to }
+                    percentiles = inWindow.map { h in
+                        HourlyPercentile(
+                            time:    h.time,
+                            tempP5:  h.temperature,
+                            tempP10: h.temperature,
+                            tempP25: h.temperature,
+                            median:  h.temperature,
+                            tempP75: h.temperature,
+                            tempP90: h.temperature,
+                            tempP95: h.temperature
+                        )
+                    }
+                }
                 .store(in: &cans)
         }
     }
-    
+
     private func persistWindow() {
         if var list = viewModel.cachedWindows[city.id],
            let idx  = list.firstIndex(where: { $0.id == window.id }) {
