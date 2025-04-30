@@ -1035,7 +1035,7 @@ struct DayDetailView: View {
     // MARK: – Ensemble heat‑map
     @ViewBuilder
     private var ensembleHeatmapSection: some View {
-        Section(header: Text("Ensemble Heat‑Map")) {
+        Section(header: Text("Ensemble Model Member Distribution")) {
             if let firstResp = ensembleResponses.first,
                let hourly    = firstResp.hourly {
 
@@ -1058,15 +1058,20 @@ struct DayDetailView: View {
                     Text("No chart data for this day.")
                         .foregroundColor(.secondary)
                 } else {
-                    Chart(points) {
-                        RectangleMark(
-                            x: .value("Time", $0.time),
-                            y: .value("Member", $0.member)
+                    Chart(points) { point in
+                        PointMark(
+                            x: .value("Time", point.time),
+                            y: .value("Temp °C", point.temperature)
                         )
-                        .foregroundStyle(by: .value("Temp °C", $0.temperature))
+                        .opacity(0.6)
                     }
-                    .chartYAxis { AxisMarks(position: .leading) }
-                    .frame(minHeight: 220)
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .hour, count: 3))
+                    }
+                    .chartYAxis {
+                        AxisMarks(position: .leading)
+                    }
+                    .frame(minHeight: 250)
                 }
 
             } else {
