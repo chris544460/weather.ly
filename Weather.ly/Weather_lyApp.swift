@@ -11,6 +11,7 @@ import Combine
 import MapKit
 import UserNotifications
 import OpenMeteoSdk
+import Charts
 
 // MARK: – App entry
 @main
@@ -887,6 +888,14 @@ struct CalendarView: View {
     }
 }
 
+/// One (time, member) temperature sample – used for the heat‑map chart
+private struct MemberTempPoint: Identifiable {
+    let id = UUID()
+    let time: Date
+    let member: Int
+    let temperature: Double
+}
+
 // 3. Day Detail View
 struct DayDetailView: View {
     @EnvironmentObject var viewModel: AppViewModel
@@ -916,36 +925,153 @@ struct DayDetailView: View {
         .foregroundColor(.secondary)
     }
 
+    // MARK: – Helper to build one hourly row
+    @ViewBuilder
+    private func hourRow(_ h: HourlyForecast) -> some View {
+        let shownTemp = viewModel.useCelsius ? h.temperature
+                                             : h.temperature * 9 / 5 + 32
+        let unit      = viewModel.useCelsius ? "°C" : "°F"
+
+        HStack {
+            Text(timeFormatter.string(from: h.time))
+                .frame(width: 55, alignment: .leading)
+            Spacer()
+            Text("\(Int(shownTemp))\(unit)")
+                .frame(width: 60, alignment: .trailing)
+            Spacer()
+            Text("\(Int(h.humidity)) %")
+                .frame(width: 50, alignment: .trailing)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text("\(Int(h.precipProb)) %")
+                .frame(width: 45, alignment: .trailing)
+                .foregroundColor(.blue)
+            Spacer()
+            Text(String(format: "%.1f", h.uvIndex))
+                .frame(width: 35, alignment: .trailing)
+                .foregroundColor(.purple)
+            Spacer()
+            Text("\(Int(h.cloudCover)) %")
+                .frame(width: 40, alignment: .trailing)
+                .foregroundColor(.teal)
+        }
+    }
+
 
     // New hourlySection computed property
     private var hourlySection: some View {
         Section(header: Text(selection.daily.date, style: .date).font(.title2)) {
-            ForEach(hoursForDay()) { h in
-                HStack {
-                    Text(timeFormatter.string(from: h.time))
-                        .frame(width: 55, alignment: .leading)
-                    Spacer()
-                    let shownTemp = viewModel.useCelsius ? h.temperature : h.temperature * 9/5 + 32
-                    let unit = viewModel.useCelsius ? "°C" : "°F"
-                    Text("\(Int(shownTemp))\(unit)")
-                        .frame(width: 60, alignment: .trailing)
-                    Spacer()
-                    Text("\(Int(h.humidity)) %")
-                        .frame(width: 50, alignment: .trailing)
+            ForEach(hoursForDay(), id: \.time) { hour in
+                hourRow(hour)
+            }
+        }
+    }
+
+    // MARK: – Ensemble member table (single, synced horizontal scroll)
+    @ViewBuilder
+    private var ensembleMemberSection: some View {
+        Section(
+            header: Text("Ensemble Temperatures Across Members")
+                .font(.headline)
+                .padding(.bottom, 2)
+        ) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if let firstResp = ensembleResponses.first,
+                       let hourly = firstResp.hourly {
+                        let memberCount  = hourly.variablesCount
+                        let memberIndices = Array(0..<memberCount)
+                        let times        = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
+
+                        // ---------- header ----------
+                        HStack(spacing: 12) {
+                            Text("Time")
+                                .frame(width: 55, alignment: .leading)
+                            ForEach(memberIndices, id: \.self) { idx in
+                                Text("\(idx)")
+                                    .frame(width: 45, alignment: .trailing)
+                            }
+                        }
+                        .font(.caption.bold())
                         .foregroundColor(.secondary)
-                    Spacer()
-                    Text("\(Int(h.precipProb)) %")
-                        .frame(width: 45, alignment: .trailing)
-                        .foregroundColor(.blue)
-                    Spacer()
-                    Text(String(format: "%.1f", h.uvIndex))
-                        .frame(width: 35, alignment: .trailing)
-                        .foregroundColor(.purple)
-                    Spacer()
-                    Text("\(Int(h.cloudCover)) %")
-                        .frame(width: 40, alignment: .trailing)
-                        .foregroundColor(.teal)
+                        Divider()
+
+                        // ---------- rows ----------
+                        ForEach(hoursForDay(), id: \.time) { h in
+                            HStack(spacing: 12) {
+                                Text(timeFormatter.string(from: h.time))
+                                    .frame(width: 55, alignment: .leading)
+
+                                ForEach(memberIndices, id: \.self) { idx in
+                                    let values = hourly.variables(at: idx)?.values ?? []
+                                    let rawTemp = zip(times, values)
+                                        .first(where: {
+                                            Calendar.current.isDate($0.0,
+                                                                    equalTo: h.time,
+                                                                    toGranularity: .minute)
+                                        })?.1
+                                    if let t = rawTemp, t.isFinite {
+                                        Text("\(Int(t))°")
+                                            .frame(width: 45, alignment: .trailing)
+                                    } else {
+                                        Text("—")
+                                            .frame(width: 45, alignment: .trailing)
+                                    }
+                                }
+                            }
+                            Divider()
+                        }
+                    } else {
+                        Text("No ensemble data available.")
+                            .foregroundColor(.secondary)
+                            .padding()
+                    }
                 }
+                .padding(.horizontal, 8)
+            }
+        }
+    }
+
+    // MARK: – Ensemble heat‑map
+    @ViewBuilder
+    private var ensembleHeatmapSection: some View {
+        Section(header: Text("Ensemble Heat‑Map")) {
+            if let firstResp = ensembleResponses.first,
+               let hourly    = firstResp.hourly {
+
+                let memberCount = Int(hourly.variablesCount)
+                let times       = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
+
+                // Build one point per (member,time) for selected day
+                let points: [MemberTempPoint] = (0..<memberCount).flatMap { m -> [MemberTempPoint] in
+                    let values = hourly.variables(at: Int32(m))?.values ?? []
+                    let pairs = Array(zip(times, values))
+                    return pairs.compactMap { (t, v) -> MemberTempPoint? in
+                        guard v.isFinite,
+                              Calendar.current.isDate(t, inSameDayAs: selection.daily.date)
+                        else { return nil }
+                        return MemberTempPoint(time: t, member: m, temperature: Double(v))
+                    }
+                }
+
+                if points.isEmpty {
+                    Text("No chart data for this day.")
+                        .foregroundColor(.secondary)
+                } else {
+                    Chart(points) {
+                        RectangleMark(
+                            x: .value("Time", $0.time),
+                            y: .value("Member", $0.member)
+                        )
+                        .foregroundStyle(by: .value("Temp °C", $0.temperature))
+                    }
+                    .chartYAxis { AxisMarks(position: .leading) }
+                    .frame(minHeight: 220)
+                }
+
+            } else {
+                Text("No ensemble data.")
+                    .foregroundColor(.secondary)
             }
         }
     }
@@ -963,66 +1089,8 @@ struct DayDetailView: View {
                     .padding()
             } else {
                 hourlySection
-                // --- Ensemble member table (single, synced horizontal scroll) ---
-                Section(header:
-                    Text("Ensemble Temperatures Across Members")
-                        .font(.headline)
-                        .padding(.bottom, 2)
-                ) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            if let firstResp = ensembleResponses.first,
-                               let hourly     = firstResp.hourly {
-
-                                let memberCount = hourly.variablesCount
-                                let memberIndices = Array(0..<memberCount)
-                                let times = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
-
-                                // ---------- header row ----------
-                                HStack(spacing: 12) {
-                                    Text("Time")
-                                        .frame(width: 55, alignment: .leading)
-                                    ForEach(memberIndices, id: \.self) { idx in
-                                        Text("\(idx)")
-                                            .frame(width: 45, alignment: .trailing)
-                                    }
-                                }
-                                .font(.caption.bold())
-                                .foregroundColor(.secondary)
-                                Divider()
-
-                                // ---------- data rows ----------
-                                ForEach(hoursForDay(), id: \.time) { h in
-                                    HStack(spacing: 12) {
-                                        Text(timeFormatter.string(from: h.time))
-                                            .frame(width: 55, alignment: .leading)
-
-                                        ForEach(memberIndices, id: \.self) { idx in
-                                            let values = hourly.variables(at: idx)?.values ?? []
-                                            let rawTemp = zip(times, values)
-                                                .first(where: { Calendar.current.isDate($0.0,
-                                                                                        equalTo: h.time,
-                                                                                        toGranularity: .minute) })?.1
-                                            if let t = rawTemp, t.isFinite {
-                                                Text("\(Int(t))°")
-                                                    .frame(width: 45, alignment: .trailing)
-                                            } else {
-                                                Text("—")
-                                                    .frame(width: 45, alignment: .trailing)
-                                            }
-                                        }
-                                    }
-                                    Divider()
-                                }
-                            } else {
-                                Text("No ensemble data available.")
-                                    .foregroundColor(.secondary)
-                                    .padding()
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                    }
-                }
+                ensembleMemberSection
+                ensembleHeatmapSection
             }
         }
         .navigationTitle("Day Details")
