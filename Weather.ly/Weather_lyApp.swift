@@ -10,6 +10,7 @@ import SwiftUI
 import Combine
 import MapKit
 import UserNotifications
+import OpenMeteoSdk
 
 // MARK: – App entry
 @main
@@ -471,6 +472,18 @@ final class WeatherService {
         // TODO: implement Tomorrow.io percentiles API
         return Just([]).eraseToAnyPublisher()
     }
+
+    // MARK: - Ensemble Fetching
+    /// Fetches ensemble hourly temperature forecasts for the given city and models.
+    func fetchEnsembleForecast(for city: City, models: [String]) async throws -> [WeatherApiResponse] {
+        let modelParam = models.joined(separator: ",")
+        guard let url = URL(string:
+            "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=\(city.latitude)&longitude=\(city.longitude)&hourly=temperature_2m&models=\(modelParam)&forecast_days=14&timezone=auto&format=flatbuffers"
+        ) else {
+            throw URLError(.badURL)
+        }
+        return try await WeatherApiResponse.fetch(url: url)
+    }
 }
 
 // MARK: – Open‑Meteo response mapping
@@ -882,24 +895,65 @@ struct DayDetailView: View {
     @State private var hours: [HourlyForecast] = []
     @State private var cancellables = Set<AnyCancellable>()
 
+    @State private var ensembleResponses: [WeatherApiResponse] = []
+
+    // Column headers as a computed property
+    private var columnHeaders: some View {
+        HStack {
+            Text("Time").frame(width: 55, alignment: .leading)
+            Spacer()
+            Text("Temp").frame(width: 55, alignment: .trailing)
+            Spacer()
+            Text("RH").frame(width: 45, alignment: .trailing)
+            Spacer()
+            Text("Rain").frame(width: 45, alignment: .trailing)
+            Spacer()
+            Text("UV").frame(width: 35, alignment: .trailing)
+            Spacer()
+            Text("Cl").frame(width: 40, alignment: .trailing)
+        }
+        .font(.caption.bold())
+        .foregroundColor(.secondary)
+    }
+
+
+    // New hourlySection computed property
+    private var hourlySection: some View {
+        Section(header: Text(selection.daily.date, style: .date).font(.title2)) {
+            ForEach(hoursForDay()) { h in
+                HStack {
+                    Text(timeFormatter.string(from: h.time))
+                        .frame(width: 55, alignment: .leading)
+                    Spacer()
+                    let shownTemp = viewModel.useCelsius ? h.temperature : h.temperature * 9/5 + 32
+                    let unit = viewModel.useCelsius ? "°C" : "°F"
+                    Text("\(Int(shownTemp))\(unit)")
+                        .frame(width: 60, alignment: .trailing)
+                    Spacer()
+                    Text("\(Int(h.humidity)) %")
+                        .frame(width: 50, alignment: .trailing)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("\(Int(h.precipProb)) %")
+                        .frame(width: 45, alignment: .trailing)
+                        .foregroundColor(.blue)
+                    Spacer()
+                    Text(String(format: "%.1f", h.uvIndex))
+                        .frame(width: 35, alignment: .trailing)
+                        .foregroundColor(.purple)
+                    Spacer()
+                    Text("\(Int(h.cloudCover)) %")
+                        .frame(width: 40, alignment: .trailing)
+                        .foregroundColor(.teal)
+                }
+            }
+        }
+    }
+
     var body: some View {
         List {
-            // column headers
-            HStack {
-                Text("Time").frame(width: 55, alignment: .leading)
-                Spacer()
-                Text("Temp").frame(width: 55, alignment: .trailing)
-                Spacer()
-                Text("RH").frame(width: 45, alignment: .trailing)
-                Spacer()
-                Text("Rain").frame(width: 45, alignment: .trailing)
-                Spacer()
-                Text("UV").frame(width: 35, alignment: .trailing)
-                Spacer()
-                Text("Cl").frame(width: 40, alignment: .trailing)
-            }
-            .font(.caption.bold())
-            .foregroundColor(.secondary)
+            columnHeaders
+
             if hours.isEmpty {
                 ProgressView("Loading…")
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -908,43 +962,72 @@ struct DayDetailView: View {
                     .foregroundColor(.secondary)
                     .padding()
             } else {
-                Section(header: Text(selection.daily.date, style: .date).font(.title2)) {
-                    ForEach(hoursForDay()) { h in
+                hourlySection
+                // Show new combined ensemble section
+                Section(header:
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Ensemble Temperatures Across Members")
+                            .font(.headline)
+                        HStack {
+                            Text("Time").frame(width: 55, alignment: .leading)
+                            Spacer()
+                            if let firstResp = ensembleResponses.first,
+                               let hourly = firstResp.hourly {
+                                let memberCount = hourly.variablesCount
+                                ForEach(0..<memberCount, id: \.self) { memberIdx in
+                                    if let variable = hourly.variables(at: memberIdx) {
+                                        Text("\(variable.ensembleMember)")
+                                            .frame(width: 35, alignment: .trailing)
+                                    } else {
+                                        Text("—")
+                                            .frame(width: 35, alignment: .trailing)
+                                    }
+                                    if memberIdx < memberCount - 1 {
+                                        Spacer()
+                                    }
+                                }
+                            }
+                        }
+                        .font(.caption.bold())
+                        .foregroundColor(.secondary)
+                    }
+                ) {
+                    ForEach(hoursForDay(), id: \.time) { h in
                         HStack {
                             Text(timeFormatter.string(from: h.time))
                                 .frame(width: 55, alignment: .leading)
                             Spacer()
-
-                            let shownTemp = viewModel.useCelsius ? h.temperature
-                                                                 : h.temperature * 9/5 + 32
-                            let unit = viewModel.useCelsius ? "°C" : "°F"
-                            Text("\(Int(shownTemp))\(unit)")
-                                .frame(width: 60, alignment: .trailing)
-                            Spacer()
-
-                            Text("\(Int(h.humidity)) %")
-                                .frame(width: 50, alignment: .trailing)
-                                .foregroundColor(.secondary)
-                            Spacer()
-
-                            Text("\(Int(h.precipProb)) %")
-                                .frame(width: 45, alignment: .trailing)
-                                .foregroundColor(.blue)
-                            Spacer()
-                            Text(String(format: "%.1f", h.uvIndex))
-                                .frame(width: 35, alignment: .trailing)
-                                .foregroundColor(.purple)
-                            Spacer()
-                            Text("\(Int(h.cloudCover)) %")
-                                .frame(width: 40, alignment: .trailing)
-                                .foregroundColor(.teal)
+                            if let firstResp = ensembleResponses.first,
+                               let hourly = firstResp.hourly {
+                                let memberCount = hourly.variablesCount
+                                ForEach(0..<memberCount, id: \.self) { memberIdx in
+                                    if let variable = hourly.variables(at: memberIdx) {
+                                        let times = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
+                                        let rawTemp = zip(times, variable.values)
+                                            .first(where: { Calendar.current.isDate($0.0,
+                                                                                    equalTo: h.time,
+                                                                                    toGranularity: .minute) })?.1
+                                        if let temp = rawTemp, temp.isFinite {
+                                            Text("\(Int(temp))°")
+                                                .frame(width: 35, alignment: .trailing)
+                                        } else {
+                                            Text("—").frame(width: 35, alignment: .trailing)
+                                        }
+                                    } else {
+                                        Text("—").frame(width: 35, alignment: .trailing)
+                                    }
+                                    if memberIdx < memberCount - 1 {
+                                        Spacer()
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         .navigationTitle("Day Details")
-    .task {
+        .task {
             viewModel.weatherService.fetchHourly(for: selection.city)
                 .receive(on: DispatchQueue.main)
                 .handleEvents(receiveSubscription: { _ in
@@ -960,6 +1043,29 @@ struct DayDetailView: View {
                 }
                 .sink { hours = $0 }
                 .store(in: &cancellables)
+
+            // Fetch ensemble model temperatures
+            Task {
+                // --- Ensemble fetch for multiple candidate models ---
+                let allModels = ["icon_seamless",           // DWD ICON – always works
+                                 "ecmwf_ifs04",            // ECMWF 0.4°
+                                 "gfs_global"]             // NOAA GFS global
+
+                var tmpResponses: [WeatherApiResponse] = []
+
+                for m in allModels {
+                    do {
+                        let res = try await viewModel.weatherService
+                            .fetchEnsembleForecast(for: selection.city,
+                                                   models: [m])
+                        tmpResponses.append(contentsOf: res)
+                    } catch {
+                        // Skip models that the SDK cannot decode (e.g. schema mismatch)
+                        print("Skipped model \(m) –", error)
+                    }
+                }
+                ensembleResponses = tmpResponses
+            }
         }
     }
 
@@ -975,6 +1081,16 @@ struct DayDetailView: View {
         return df
     }
 }
+
+// --- Replace Text(variable.ensembleMember) with Text("\(variable.ensembleMember)") wherever found in DayDetailView ---
+
+// (Assumed location in an earlier ForEach block in DayDetailView, for ensemble members)
+// Example of replacement:
+// Before:
+//   Text(variable.ensembleMember)
+// After:
+//   Text("\(variable.ensembleMember)")
+
 
 struct GoodWindowDetailView: View {
     @EnvironmentObject var viewModel: AppViewModel
@@ -1149,20 +1265,11 @@ struct GoodWindowDetailView: View {
                 .sink { fetched in
                     // Store all fetched hours
                     hours = fetched
-                    // Build a simple percentile stub for each hour in this window
-                    let inWindow = fetched.filter { $0.time >= window.from && $0.time <= window.to }
-                    percentiles = inWindow.map { h in
-                        HourlyPercentile(
-                            time:    h.time,
-                            tempP5:  h.temperature,
-                            tempP10: h.temperature,
-                            tempP25: h.temperature,
-                            median:  h.temperature,
-                            tempP75: h.temperature,
-                            tempP90: h.temperature,
-                            tempP95: h.temperature
-                        )
-                    }
+                    viewModel.weatherService
+                        .fetchHourlyPercentiles(for: city, window: window)
+                        .receive(on: DispatchQueue.main)
+                        .sink { percentiles = $0 }
+                        .store(in: &cans)
                 }
                 .store(in: &cans)
         }
