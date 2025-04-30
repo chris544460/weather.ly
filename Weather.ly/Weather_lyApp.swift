@@ -963,65 +963,64 @@ struct DayDetailView: View {
                     .padding()
             } else {
                 hourlySection
-                // Show new combined ensemble section
+                // --- Ensemble member table (single, synced horizontal scroll) ---
                 Section(header:
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Ensemble Temperatures Across Members")
-                            .font(.headline)
-                        HStack {
-                            Text("Time").frame(width: 55, alignment: .leading)
-                            Spacer()
-                            if let firstResp = ensembleResponses.first,
-                               let hourly = firstResp.hourly {
-                                let memberCount = hourly.variablesCount
-                                ForEach(0..<memberCount, id: \.self) { memberIdx in
-                                    if let variable = hourly.variables(at: memberIdx) {
-                                        Text("\(variable.ensembleMember)")
-                                            .frame(width: 35, alignment: .trailing)
-                                    } else {
-                                        Text("—")
-                                            .frame(width: 35, alignment: .trailing)
-                                    }
-                                    if memberIdx < memberCount - 1 {
-                                        Spacer()
-                                    }
-                                }
-                            }
-                        }
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                    }
+                    Text("Ensemble Temperatures Across Members")
+                        .font(.headline)
+                        .padding(.bottom, 2)
                 ) {
-                    ForEach(hoursForDay(), id: \.time) { h in
-                        HStack {
-                            Text(timeFormatter.string(from: h.time))
-                                .frame(width: 55, alignment: .leading)
-                            Spacer()
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
                             if let firstResp = ensembleResponses.first,
-                               let hourly = firstResp.hourly {
+                               let hourly     = firstResp.hourly {
+
                                 let memberCount = hourly.variablesCount
-                                ForEach(0..<memberCount, id: \.self) { memberIdx in
-                                    if let variable = hourly.variables(at: memberIdx) {
-                                        let times = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
-                                        let rawTemp = zip(times, variable.values)
-                                            .first(where: { Calendar.current.isDate($0.0,
-                                                                                    equalTo: h.time,
-                                                                                    toGranularity: .minute) })?.1
-                                        if let temp = rawTemp, temp.isFinite {
-                                            Text("\(Int(temp))°")
-                                                .frame(width: 35, alignment: .trailing)
-                                        } else {
-                                            Text("—").frame(width: 35, alignment: .trailing)
-                                        }
-                                    } else {
-                                        Text("—").frame(width: 35, alignment: .trailing)
-                                    }
-                                    if memberIdx < memberCount - 1 {
-                                        Spacer()
+                                let memberIndices = Array(0..<memberCount)
+                                let times = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
+
+                                // ---------- header row ----------
+                                HStack(spacing: 12) {
+                                    Text("Time")
+                                        .frame(width: 55, alignment: .leading)
+                                    ForEach(memberIndices, id: \.self) { idx in
+                                        Text("\(idx)")
+                                            .frame(width: 45, alignment: .trailing)
                                     }
                                 }
+                                .font(.caption.bold())
+                                .foregroundColor(.secondary)
+                                Divider()
+
+                                // ---------- data rows ----------
+                                ForEach(hoursForDay(), id: \.time) { h in
+                                    HStack(spacing: 12) {
+                                        Text(timeFormatter.string(from: h.time))
+                                            .frame(width: 55, alignment: .leading)
+
+                                        ForEach(memberIndices, id: \.self) { idx in
+                                            let values = hourly.variables(at: idx)?.values ?? []
+                                            let rawTemp = zip(times, values)
+                                                .first(where: { Calendar.current.isDate($0.0,
+                                                                                        equalTo: h.time,
+                                                                                        toGranularity: .minute) })?.1
+                                            if let t = rawTemp, t.isFinite {
+                                                Text("\(Int(t))°")
+                                                    .frame(width: 45, alignment: .trailing)
+                                            } else {
+                                                Text("—")
+                                                    .frame(width: 45, alignment: .trailing)
+                                            }
+                                        }
+                                    }
+                                    Divider()
+                                }
+                            } else {
+                                Text("No ensemble data available.")
+                                    .foregroundColor(.secondary)
+                                    .padding()
                             }
                         }
+                        .padding(.horizontal, 8)
                     }
                 }
             }
