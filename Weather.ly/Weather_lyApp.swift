@@ -935,6 +935,13 @@ private struct MemberTempPoint: Identifiable {
     let temperature: Double
 }
 
+/// Represents the median temperature at a given time
+private struct MedianTempPoint: Identifiable {
+    let id = UUID()
+    let time: Date
+    let temperature: Double
+}
+
 // 3. Day Detail View
 struct DayDetailView: View {
     @EnvironmentObject var viewModel: AppViewModel
@@ -1102,16 +1109,39 @@ struct DayDetailView: View {
                     }
                 }
 
+                // Compute the median temperature per time across all members
+                let medianPoints: [MedianTempPoint] = {
+                    let groups = Dictionary(grouping: points, by: { $0.time })
+                    return groups.map { (time, pts) in
+                        let sortedTemps = pts.map(\.temperature).sorted()
+                        // Pick middle element
+                        let medianValue = sortedTemps[sortedTemps.count / 2]
+                        return MedianTempPoint(time: time, temperature: medianValue)
+                    }
+                }()
+
                 if points.isEmpty {
                     Text("No chart data for this day.")
                         .foregroundColor(.secondary)
                 } else {
-                    Chart(points) { point in
-                        PointMark(
-                            x: .value("Time", point.time),
-                            y: .value("Temp °C", point.temperature)
-                        )
-                        .opacity(0.6)
+                    Chart {
+                        // Original ensemble member points
+                        ForEach(points) { point in
+                            PointMark(
+                                x: .value("Time", point.time),
+                                y: .value("Temp °C", point.temperature)
+                            )
+                            .opacity(0.6)
+                        }
+                        // Median temperature points
+                        ForEach(medianPoints) { mp in
+                            PointMark(
+                                x: .value("Time", mp.time),
+                                y: .value("Temp °C", mp.temperature)
+                            )
+                            .symbolSize(100)
+                            .foregroundStyle(.black)
+                        }
                     }
                     .chartXAxis {
                         AxisMarks(values: .stride(by: .hour, count: 3))
