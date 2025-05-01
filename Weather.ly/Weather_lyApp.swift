@@ -5,6 +5,7 @@
 //  Created 2025‑04‑19
 //
 
+
 import Foundation
 import SwiftUI
 import Combine
@@ -12,6 +13,12 @@ import MapKit
 import UserNotifications
 import OpenMeteoSdk
 import Charts
+
+// MARK: - Helper for longitude normalization
+/// Returns negative longitude for east/west normalization (e.g. for Open-Meteo API)
+private func normalizedLongitude(_ lon: Double) -> Double {
+    return lon < 0 ? lon : -lon
+}
 
 // MARK: – App entry
 @main
@@ -117,6 +124,15 @@ final class AppViewModel: ObservableObject {
     // new keys (put near the other static keys)
     private static let workStartKey = "workStartHour"
     private static let workEndKey   = "workEndHour"
+    private static let timezoneKey  = "selectedTimezone"
+    /// IANA time‑zone identifier for API queries (e.g. "America/New_York")
+    @Published var selectedTimezone: String =
+        UserDefaults.standard.string(forKey: AppViewModel.timezoneKey) ?? "auto" {
+        didSet {
+            saveSelectedTimezone()
+            weatherService.timezone = selectedTimezone
+        }
+    }
 
     init() {
         loadCities()
@@ -124,6 +140,7 @@ final class AppViewModel: ObservableObject {
         loadWindows()
         purgeExpiredWindows()
         requestNotificationPermission()
+        weatherService.timezone = selectedTimezone
     }
 
 
@@ -202,6 +219,10 @@ final class AppViewModel: ObservableObject {
 
     private func saveUnits() {
         UserDefaults.standard.set(useCelsius, forKey: AppViewModel.unitsKey)
+    }
+
+    private func saveSelectedTimezone() {
+        UserDefaults.standard.set(selectedTimezone, forKey: Self.timezoneKey)
     }
 
     private func saveCities() {
@@ -348,6 +369,8 @@ struct DailySelection: Identifiable, Hashable {
 // MARK: – WeatherService (Open‑Meteo)
 /// Fetches a 14‑day daily forecast and maps it into `[DailyForecast]`.
 final class WeatherService {
+    /// Time‑zone identifier for API requests (defaults to "auto")
+    var timezone: String = "auto"
 
     private let session: URLSession
     private let decoder: JSONDecoder
@@ -401,7 +424,7 @@ final class WeatherService {
             .map(\.data)
             .handleEvents(receiveOutput: { data in
                 if let string = String(data: data, encoding: .utf8) {
-                    print("[DEBUG] Raw hourly JSON:\n", string)
+                    print("[DEBUG] Raw hourly JSON:\n")
                 }
             })
             .decode(type: HourlyResp.self, decoder: {
@@ -448,13 +471,14 @@ final class WeatherService {
 
     // Build the Open‑Meteo URL
     private func buildURL(for city: City) -> URL? {
+        let lonParam = normalizedLongitude(city.longitude)
         var comps = URLComponents(string: "https://api.open-meteo.com/v1/forecast")
         comps?.queryItems = [
             .init(name: "latitude",  value: String(city.latitude)),
-            .init(name: "longitude", value: String(city.longitude)),
+            .init(name: "longitude", value: String(lonParam)),
             .init(name: "daily", value:"temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,uv_index_max"),
             .init(name: "forecast_days", value: "14"),
-            .init(name: "timezone",  value: "auto")
+            .init(name: "timezone",  value: timezone)
         ]
         return comps?.url
     }
@@ -478,9 +502,11 @@ final class WeatherService {
     /// Fetches ensemble hourly temperature forecasts for the given city and models.
     func fetchEnsembleForecast(for city: City, models: [String]) async throws -> [WeatherApiResponse] {
         let modelParam = models.joined(separator: ",")
-        guard let url = URL(string:
-            "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=\(city.latitude)&longitude=\(city.longitude)&hourly=temperature_2m&models=\(modelParam)&forecast_days=14&timezone=auto&format=flatbuffers"
-        ) else {
+        let lonParam = normalizedLongitude(city.longitude)
+        let latParam = city.latitude
+        let urlString = "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=\(latParam)&longitude=\(lonParam)&hourly=temperature_2m&models=\(modelParam)&forecast_days=14&timezone=\(timezone)&format=flatbuffers"
+        print("Ensemble API URL: \(urlString)")
+        guard let url = URL(string: urlString) else {
             throw URLError(.badURL)
         }
         return try await WeatherApiResponse.fetch(url: url)
@@ -981,7 +1007,11 @@ struct DayDetailView: View {
                        let hourly = firstResp.hourly {
                         let memberCount  = hourly.variablesCount
                         let memberIndices = Array(0..<memberCount)
-                        let times        = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
+                        // Temporarily disable offset
+                        // let offsetValue = viewModel.selectedTimezone == "auto"
+                        //     ? firstResp.utcOffsetSeconds
+                        //     : 0
+                        let times = hourly.getDateTime(offset: 0)
 
                         // ---------- header ----------
                         HStack(spacing: 12) {
@@ -1011,7 +1041,7 @@ struct DayDetailView: View {
                                                                     toGranularity: .minute)
                                         })?.1
                                     if let t = rawTemp, t.isFinite {
-                                        Text("\(Int(t))°")
+                                        Text(String(format: "%.1f°", t))
                                             .frame(width: 45, alignment: .trailing)
                                     } else {
                                         Text("—")
@@ -1040,7 +1070,11 @@ struct DayDetailView: View {
                let hourly    = firstResp.hourly {
 
                 let memberCount = Int(hourly.variablesCount)
-                let times       = hourly.getDateTime(offset: firstResp.utcOffsetSeconds)
+                // Temporarily disable offset
+                // let offsetValue = viewModel.selectedTimezone == "auto"
+                //     ? firstResp.utcOffsetSeconds
+                //     : 0
+                let times = hourly.getDateTime(offset: 0)
 
                 // Build one point per (member,time) for selected day
                 let points: [MemberTempPoint] = (0..<memberCount).flatMap { m -> [MemberTempPoint] in
@@ -1118,11 +1152,12 @@ struct DayDetailView: View {
 
             // Fetch ensemble model temperatures
             Task {
+                print("Iterate over models")
                 // --- Ensemble fetch for multiple candidate models ---
-                let allModels = ["icon_seamless",           // DWD ICON – always works
-                                 "ecmwf_ifs04",            // ECMWF 0.4°
-                                 "gfs_global"]             // NOAA GFS global
-
+                let allModels = ["icon_seamless"//,           // DWD ICON – always works
+                                 //"ecmwf_ifs04",            // ECMWF 0.4°
+                                 //"gfs_global"]             // NOAA GFS global
+                                 ]
                 var tmpResponses: [WeatherApiResponse] = []
 
                 for m in allModels {
@@ -1568,6 +1603,15 @@ struct SettingsView: View {
                         Text("Add alert")
                     }
                 }
+            }
+
+            Section("Timezone") {
+                Picker("Time Zone", selection: $viewModel.selectedTimezone) {
+                    ForEach(TimeZone.knownTimeZoneIdentifiers.sorted(), id: \.self) { tz in
+                        Text(tz).tag(tz)
+                    }
+                }
+                .pickerStyle(.menu)
             }
         }
         .navigationTitle("Settings")
