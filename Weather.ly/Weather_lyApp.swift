@@ -424,7 +424,7 @@ final class WeatherService {
             .map(\.data)
             .handleEvents(receiveOutput: { data in
                 if let string = String(data: data, encoding: .utf8) {
-                    print("[DEBUG] Raw hourly JSON:\n")
+                    print("[DEBUG] Raw hourly JSON:\n\(string)")
                 }
             })
             .decode(type: HourlyResp.self, decoder: {
@@ -506,6 +506,19 @@ final class WeatherService {
         let latParam = city.latitude
         let urlString = "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=\(latParam)&longitude=\(lonParam)&hourly=temperature_2m&models=\(modelParam)&forecast_days=14&timezone=\(timezone)&format=flatbuffers"
         print("Ensemble API URL: \(urlString)")
+        guard let url = URL(string: urlString) else {
+            throw URLError(.badURL)
+        }
+        return try await WeatherApiResponse.fetch(url: url)
+    }
+
+    /// Fetches ensemble hourly precipitation forecasts for the given city and models.
+    func fetchEnsemblePrecipForecast(for city: City, models: [String]) async throws -> [WeatherApiResponse] {
+        let modelParam = models.joined(separator: ",")
+        let lonParam = normalizedLongitude(city.longitude)
+        let latParam = city.latitude
+        let urlString = "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=\(latParam)&longitude=\(lonParam)&hourly=precipitation&models=\(modelParam)&forecast_days=14&timezone=\(timezone)&format=flatbuffers"
+        print("Ensemble Precip API URL: \(urlString)")
         guard let url = URL(string: urlString) else {
             throw URLError(.badURL)
         }
@@ -931,6 +944,7 @@ struct DayDetailView: View {
     @State private var cancellables = Set<AnyCancellable>()
 
     @State private var ensembleResponses: [WeatherApiResponse] = []
+    @State private var ensemblePrecipResponses: [WeatherApiResponse] = []
 
     // Column headers as a computed property
     private var columnHeaders: some View {
@@ -1115,6 +1129,75 @@ struct DayDetailView: View {
         }
     }
 
+
+    // MARK: – Ensemble precipitation chart
+    /// One (time, member) precipitation sample – used for the precipitation chart
+    private struct MemberPrecipPoint: Identifiable {
+        let id = UUID()
+        let time: Date
+        let member: Int
+        let precipitation: Double
+    }
+    
+    private func buildPrecipPoints(
+        from resp: WeatherApiResponse,
+        matching date: Date
+    ) -> [MemberPrecipPoint] {
+        guard let hourly = resp.hourly else { return [] }
+        let memberCount = Int(hourly.variablesCount)
+        let times       = hourly.getDateTime(offset: 0)
+
+        return (0..<memberCount).flatMap { (m: Int) -> [MemberPrecipPoint] in
+            let rawValues: [Float32] = hourly.variables(at: Int32(m))?.values ?? []
+            let values: [Double] = rawValues.map { Double($0) }
+            return zip(times, values).compactMap { (t, v) in
+                guard v.isFinite,
+                      Calendar.current.isDate(t, inSameDayAs: date)
+                else { return nil }
+                return MemberPrecipPoint(time: t, member: m, precipitation: v)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var ensemblePrecipitationChartSection: some View {
+        Section(
+          header: Text("Ensemble Precipitation Distribution")
+                    .font(.headline)
+                    .padding(.bottom, 2)
+        ) {
+          if let firstResp = ensemblePrecipResponses.first {
+            let points = buildPrecipPoints(
+               from: firstResp,
+               matching: selection.daily.date
+            )
+
+            if points.isEmpty {
+              Text("No graph data for this day.")
+                .foregroundColor(.secondary)
+            } else {
+              Chart(points) { point in
+                PointMark(
+                  x: .value("Time", point.time),
+                  y: .value("Precip (mm)", point.precipitation)
+                )
+                .opacity(0.6)
+              }
+              .chartXAxis {
+                AxisMarks(values: .stride(by: .hour, count: 3))
+              }
+              .chartYAxis {
+                AxisMarks(position: .leading)
+              }
+              .frame(minHeight: 250)
+            }
+          } else {
+            Text("No ensemble precipitation data.")
+              .foregroundColor(.secondary)
+          }
+        }
+    }
+
     var body: some View {
         List {
             columnHeaders
@@ -1129,6 +1212,7 @@ struct DayDetailView: View {
             } else {
                 hourlySection
                 ensembleMemberSection
+                ensemblePrecipitationChartSection
                 ensembleHeatmapSection
             }
         }
@@ -1172,6 +1256,26 @@ struct DayDetailView: View {
                     }
                 }
                 ensembleResponses = tmpResponses
+            }
+
+            // Fetch ensemble precipitation forecasts
+            Task {
+                var tmpPrecResponses: [WeatherApiResponse] = []
+                let allModels = ["icon_seamless"//,           // DWD ICON – always works
+                                 //"ecmwf_ifs04",            // ECMWF 0.4°
+                                 //"gfs_global"]             // NOAA GFS global
+                                 ]
+                for m in allModels {
+                    do {
+                        let res = try await viewModel.weatherService
+                            .fetchEnsemblePrecipForecast(for: selection.city,
+                                                         models: [m])
+                        tmpPrecResponses.append(contentsOf: res)
+                    } catch {
+                        print("Skipped precip model \(m) –", error)
+                    }
+                }
+                ensemblePrecipResponses = tmpPrecResponses
             }
         }
     }
@@ -1878,4 +1982,5 @@ private struct LeadTimePickerSheet: View {
 extension SettingsView.PickerKind: Identifiable {
     var id: Int { hashValue }
 }
+
 
