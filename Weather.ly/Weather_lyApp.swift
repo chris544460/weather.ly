@@ -1168,6 +1168,13 @@ struct DayDetailView: View {
         let member: Int
         let precipitation: Double
     }
+
+    /// Represents the median precipitation at a given time
+    private struct MedianPrecipPoint: Identifiable {
+        let id = UUID()
+        let time: Date
+        let precipitation: Double
+    }
     
     private func buildPrecipPoints(
         from resp: WeatherApiResponse,
@@ -1192,39 +1199,61 @@ struct DayDetailView: View {
     @ViewBuilder
     private var ensemblePrecipitationChartSection: some View {
         Section(
-          header: Text("Ensemble Precipitation Distribution")
-                    .font(.headline)
-                    .padding(.bottom, 2)
+            header: Text("Ensemble Precipitation Distribution")
+                .font(.headline)
+                .padding(.bottom, 2)
         ) {
-          if let firstResp = ensemblePrecipResponses.first {
-            let points = buildPrecipPoints(
-               from: firstResp,
-               matching: selection.daily.date
-            )
-
-            if points.isEmpty {
-              Text("No graph data for this day.")
-                .foregroundColor(.secondary)
-            } else {
-              Chart(points) { point in
-                PointMark(
-                  x: .value("Time", point.time),
-                  y: .value("Precip (mm)", point.precipitation)
+            if let firstResp = ensemblePrecipResponses.first {
+                let points = buildPrecipPoints(
+                    from: firstResp,
+                    matching: selection.daily.date
                 )
-                .opacity(0.6)
-              }
-              .chartXAxis {
-                AxisMarks(values: .stride(by: .hour, count: 3))
-              }
-              .chartYAxis {
-                AxisMarks(position: .leading)
-              }
-              .frame(minHeight: 250)
+
+                // Compute the median precipitation per time across all members
+                let medianPoints: [MedianPrecipPoint] = {
+                    let groups = Dictionary(grouping: points, by: { $0.time })
+                    return groups.map { (time, pts) in
+                        let sortedValues = pts.map(\.precipitation).sorted()
+                        let medianValue = sortedValues[sortedValues.count / 2]
+                        return MedianPrecipPoint(time: time, precipitation: medianValue)
+                    }
+                }()
+
+                if points.isEmpty {
+                    Text("No graph data for this day.")
+                        .foregroundColor(.secondary)
+                } else {
+                    Chart {
+                        // Original ensemble precipitation points
+                        ForEach(points) { point in
+                            PointMark(
+                                x: .value("Time", point.time),
+                                y: .value("Precip (mm)", point.precipitation)
+                            )
+                            .opacity(0.6)
+                        }
+                        // Median precipitation points
+                        ForEach(medianPoints) { mp in
+                            PointMark(
+                                x: .value("Time", mp.time),
+                                y: .value("Precip (mm)", mp.precipitation)
+                            )
+                            .symbolSize(100)
+                            .foregroundStyle(.black)
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: .stride(by: .hour, count: 3))
+                    }
+                    .chartYAxis {
+                        AxisMarks(position: .leading)
+                    }
+                    .frame(minHeight: 250)
+                }
+            } else {
+                Text("No ensemble precipitation data.")
+                    .foregroundColor(.secondary)
             }
-          } else {
-            Text("No ensemble precipitation data.")
-              .foregroundColor(.secondary)
-          }
         }
     }
 
