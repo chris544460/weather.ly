@@ -1199,74 +1199,6 @@ struct DayDetailView: View {
         }
     }
 
-    // MARK: – Ensemble member table (single, synced horizontal scroll)
-    @ViewBuilder
-    private var ensembleMemberSection: some View {
-        Section(
-            header: Text("Ensemble Temperatures Across Members")
-                .font(.headline)
-                .padding(.bottom, 2)
-        ) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if let firstResp = ensembleResponses.first,
-                       let hourly = firstResp.hourly {
-                        let memberCount  = hourly.variablesCount
-                        let memberIndices = Array(0..<memberCount)
-                        // Temporarily disable offset
-                        // let offsetValue = viewModel.selectedTimezone == "auto"
-                        //     ? firstResp.utcOffsetSeconds
-                        //     : 0
-                        let times = hourly.getDateTime(offset: 0)
-
-                        // ---------- header ----------
-                        HStack(spacing: 12) {
-                            Text("Time")
-                                .frame(width: 55, alignment: .leading)
-                            ForEach(memberIndices, id: \.self) { idx in
-                                Text("\(idx)")
-                                    .frame(width: 45, alignment: .trailing)
-                            }
-                        }
-                        .font(.caption.bold())
-                        .foregroundColor(.secondary)
-                        Divider()
-
-                        // ---------- rows ----------
-                        ForEach(hoursForDay(), id: \.time) { h in
-                            HStack(spacing: 12) {
-                                Text(timeFormatter.string(from: h.time))
-                                    .frame(width: 55, alignment: .leading)
-
-                                ForEach(memberIndices, id: \.self) { idx in
-                                    let values = hourly.variables(at: idx)?.values ?? []
-                                    let rawTemp = zip(times, values)
-                                        .first(where: {
-                                            Calendar.current.isDate($0.0,
-                                                                    equalTo: h.time,
-                                                                    toGranularity: .minute)
-                                        })?.1
-                                    if let t = rawTemp, t.isFinite {
-                                        Text(String(format: "%.1f°", t))
-                                            .frame(width: 45, alignment: .trailing)
-                                    } else {
-                                        Text("—")
-                                            .frame(width: 45, alignment: .trailing)
-                                    }
-                                }
-                            }
-                            Divider()
-                        }
-                    } else {
-                        Text("No ensemble data available.")
-                            .foregroundColor(.secondary)
-                            .padding()
-                    }
-                }
-                .padding(.horizontal, 8)
-            }
-        }
-    }
 
     // MARK: – Ensemble heat‑map
     @ViewBuilder
@@ -1455,7 +1387,6 @@ struct DayDetailView: View {
                     .padding()
             } else {
                 hourlySection
-                ensembleMemberSection
                 ensemblePrecipitationChartSection
                 ensembleHeatmapSection
             }
