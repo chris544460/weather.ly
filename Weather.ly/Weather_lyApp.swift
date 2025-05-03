@@ -369,10 +369,10 @@ final class AppViewModel: ObservableObject {
         func ok(_ h: HourlyForecast) -> Bool {
             let tC = toC(h.temperature)
             return tC >= c.tempMin && tC <= c.tempMax &&
-                   h.humidity <= c.humidityMax &&
-                   h.uvIndex  <= c.uvMax &&
-                   h.cloudCover  <= c.cloudCoverMax &&
-                   (c.precipitationAllowed || h.precipProb < 20)
+                h.humidity <= c.humidityMax &&
+                h.uvIndex <= c.uvMax &&
+                h.cloudCover <= c.cloudCoverMax &&
+                h.precipProb <= c.precipProbMax
         }
         var out: [GoodWindow] = []
         var start: Int? = nil
@@ -422,12 +422,13 @@ struct City: Identifiable, Codable, Hashable {
 }
 
 struct DayCriteria: Codable {
-    var tempMin               : Double = 65
-    var tempMax               : Double = 75
+    var tempMin               : Double = 20
+    var tempMax               : Double = 25
     var humidityMax           : Double = 60
     var uvMax                 : Double = 8
     var cloudCoverMax: Double = 50
-    var precipitationAllowed  : Bool   = false
+//    var precipitationAllowed  : Bool   = false
+    var precipProbMax: Double = 20
 }
 
 // MARK: - City Row View
@@ -835,8 +836,8 @@ extension AppViewModel {
         if tempC > criteria.tempMax { reasons.append("Temp too high") }
         if hour.humidity > criteria.humidityMax { reasons.append("Humidity too high") }
         if hour.uvIndex > criteria.uvMax { reasons.append("UV index too high") }
-        if !criteria.precipitationAllowed && hour.precipProb >= 20 {
-            reasons.append("Precip \(Int(hour.precipProb))%")
+        if hour.precipProb > criteria.precipProbMax {
+            reasons.append("Precip \(Int(hour.precipProb))% > \(Int(criteria.precipProbMax))%")
         }
         return reasons
     }
@@ -968,7 +969,7 @@ struct CalendarView: View {
                                                                     : d.temperature * 9/5 + 32
                             let tempOK = forecastTemp >= crit.tempMin && forecastTemp <= crit.tempMax
                             let humidOK = d.humidity   <= crit.humidityMax
-                            let rainOK  = crit.precipitationAllowed || d.precipitationProbability < 20
+                            let rainOK = d.precipitationProbability <= crit.precipProbMax
                             d.isGoodDay = tempOK && humidOK && rainOK
                             return d
                         }
@@ -1076,10 +1077,10 @@ struct CalendarView: View {
         func ok(_ h: HourlyForecast) -> Bool {
             let tC = toC(h.temperature)
             return tC >= c.tempMin && tC <= c.tempMax &&
-                   h.humidity <= c.humidityMax &&
-                   h.uvIndex  <= c.uvMax &&
-                   h.cloudCover  <= c.cloudCoverMax &&
-                   (c.precipitationAllowed || h.precipProb < 20)
+                h.humidity <= c.humidityMax &&
+                h.uvIndex <= c.uvMax &&
+                h.cloudCover <= c.cloudCoverMax &&
+                h.precipProb <= c.precipProbMax
         }
 
         var out: [GoodWindow] = []
@@ -1886,12 +1887,28 @@ struct SettingsView: View {
                         Text("\(Int(viewModel.criteria.cloudCoverMax)) %")
                             .foregroundColor(.secondary) }
                 }
-
-                Toggle("Allow Precipitation",
-                       isOn: $viewModel.criteria.precipitationAllowed)
-                    .onChange(of: viewModel.criteria.precipitationAllowed) { _ in
-                        viewModel.saveCriteria()
+                
+                // Max precipitation probability
+                VStack(alignment: .leading) {
+                    Text("Max Precipitation %")
+                    HStack {
+                        Slider(value: $viewModel.criteria.precipProbMax, in: 0...100, step: 1)
+                        Text("\(Int(viewModel.criteria.precipProbMax))%")
+                            .foregroundColor(.secondary)
+                            .frame(width: 50, alignment: .trailing)
                     }
+                }
+                .onChange(of: viewModel.criteria.precipProbMax) { _ in
+                    viewModel.saveCriteria()
+                    viewModel.cachedWindows = [:]       // clear cache
+                    viewModel.prefetchWindows()         // re-fetch with new criteria
+                }
+
+//                Toggle("Allow Precipitation",
+//                       isOn: $viewModel.criteria.precipitationAllowed)
+//                    .onChange(of: viewModel.criteria.precipitationAllowed) { _ in
+//                        viewModel.saveCriteria()
+//                    }
                 
                 Section("Work Hours") {
                     Button {
