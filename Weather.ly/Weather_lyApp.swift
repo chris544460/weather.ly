@@ -741,10 +741,13 @@ struct HourlyPercentile: Identifiable, Decodable {
 }
 
 // 1. City List
+import SwiftUI
+
 struct CityListView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @State private var showingAdd      = false
     @State private var showingSettings = false
+    @State private var todaySelection: DailySelection?
 
     var body: some View {
         ZStack {
@@ -760,6 +763,19 @@ struct CityListView: View {
                         )
                         .listRowBackground(Color.clear)
                     }
+                    .contextMenu {
+                        Button("View Today’s Details") {
+                            // Construct a placeholder DailyForecast for today
+                            let today = Date()
+                            let dummy = DailyForecast(date: today,
+                                                      temperature: 0,
+                                                      humidity: 0,
+                                                      precipitationProbability: 0,
+                                                      isGoodDay: false,
+                                                      uvMax: 0)
+                            todaySelection = DailySelection(city: city, daily: dummy)
+                        }
+                    }
                     .listRowSeparator(.hidden)
                 }
                 .onDelete { offsets in
@@ -771,7 +787,10 @@ struct CityListView: View {
             .background(Color.clear)
             .listRowSeparator(.hidden)
             .listRowSeparator(.hidden, edges: .all)
-            
+        }
+        .sheet(item: $todaySelection) { sel in
+            DayDetailView(selection: sel)
+                .environmentObject(viewModel)
         }
         .navigationTitle("Cities")
         .toolbar {
