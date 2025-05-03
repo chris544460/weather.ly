@@ -435,6 +435,7 @@ struct CityRowView: View {
     let city: City
     let currentTemp: Double?
     let nextGoodWindow: GoodWindow?
+    let reasons: [String]?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -452,6 +453,13 @@ struct CityRowView: View {
                 Text("Next good window: \(timeString(window.from)) – \(timeString(window.to))")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+            }
+            if let reasons = reasons {
+                ForEach(reasons, id: \.self) { r in
+                    Text(r)
+                        .font(.caption2)
+                        .foregroundColor(.red)
+                }
             }
         }
         .padding()
@@ -748,6 +756,7 @@ struct CityListView: View {
     @State private var showingAdd      = false
     @State private var showingSettings = false
     @State private var todaySelection: DailySelection?
+    @AppStorage("showReasons") private var showReasons = false
 
     var body: some View {
         ZStack {
@@ -755,11 +764,13 @@ struct CityListView: View {
                 .ignoresSafeArea()
             List {
                 ForEach(viewModel.cities) { city in
+                    let reasons = viewModel.currentReasonsForCity(city)
                     NavigationLink(value: city) {
                         CityRowView(
                             city: city,
                             currentTemp: viewModel.currentTemperatureForCity(city),
-                            nextGoodWindow: viewModel.nextGoodWindowForCity(city)
+                            nextGoodWindow: viewModel.nextGoodWindowForCity(city),
+                            reasons: showReasons ? reasons : nil
                         )
                         .listRowBackground(Color.clear)
                     }
@@ -805,6 +816,29 @@ struct CityListView: View {
         .sheet(isPresented: $showingSettings) {
             SettingsView().environmentObject(viewModel)
         }
+    }
+}
+// MARK: - Reasons extension
+extension AppViewModel {
+    /// Returns why the current hour fails the criteria.
+    func currentReasonsForCity(_ city: City) -> [String] {
+        guard let hours = hourlyCache[city.id], !hours.isEmpty else { return [] }
+        let now = Date()
+        // Find the forecast at or before now
+        let past = hours.filter { $0.time <= now }
+        let hour = (past.isEmpty ? hours : past)
+            .sorted(by: { $0.time > $1.time })
+            .first!
+        var reasons: [String] = []
+        let tempC = hour.temperature
+        if tempC < criteria.tempMin { reasons.append("Temp too low") }
+        if tempC > criteria.tempMax { reasons.append("Temp too high") }
+        if hour.humidity > criteria.humidityMax { reasons.append("Humidity too high") }
+        if hour.uvIndex > criteria.uvMax { reasons.append("UV index too high") }
+        if !criteria.precipitationAllowed && hour.precipProb >= 20 {
+            reasons.append("Precip \(Int(hour.precipProb))%")
+        }
+        return reasons
     }
 }
 // MARK: - AppViewModel helpers for CityRowView
@@ -1790,6 +1824,7 @@ struct AddCityView: View {
 // 5. Settings View – clean rows + modal wheel pickers
 struct SettingsView: View {
     @EnvironmentObject var viewModel: AppViewModel
+    @AppStorage("showReasons") private var showReasons = false
 
     // Which picker is currently shown
     @State private var activePicker: PickerKind?
@@ -1915,6 +1950,9 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
+            }
+            Section("Cards") {
+                Toggle("Show reasons on cards", isOn: $showReasons)
             }
         }
         .navigationTitle("Settings")
