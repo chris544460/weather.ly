@@ -1214,6 +1214,11 @@ struct DayDetailView: View {
         Section(header: Text(selection.daily.date, style: .date).font(.title2)) {
             ForEach(hoursForDay(), id: \.time) { hour in
                 hourRow(hour)
+                    .listRowBackground(
+                        Calendar.current.isDate(hour.time, equalTo: Date(), toGranularity: .hour)
+                            ? Color.accentColor.opacity(0.2)
+                            : Color.clear
+                    )
             }
         }
     }
