@@ -13,6 +13,7 @@ import MapKit
 import UserNotifications
 import OpenMeteoSdk
 import Charts
+import Combine // for Just
 
 // MARK: - Helper for longitude normalization
 /// Returns negative longitude for east/west normalization (e.g. for Open-Meteo API)
@@ -41,9 +42,13 @@ struct WeatherlyApp: App {
 
 // MARK: – View‑model
 final class AppViewModel: ObservableObject {
-    @Published var cities: [City]          = []
+    @Published var cities: [City] = [] {
+        didSet {
+            saveCities()
+            prefetchWindows()
+        }
+    }
     @Published var navigationPath          = NavigationPath()
-    @Published var criteria                = DayCriteria()
     /// true = Celsius, false = Fahrenheit
     @Published var useCelsius: Bool =
         UserDefaults.standard.object(forKey: AppViewModel.unitsKey) as? Bool ?? false {
@@ -51,6 +56,8 @@ final class AppViewModel: ObservableObject {
     }
     /// Cached good‑windows keyed by city.id
     @Published var cachedWindows: [UUID: [GoodWindow]] = [:]
+    /// Cached raw hourly data keyed by city.id
+    @Published var hourlyCache: [UUID: [HourlyForecast]] = [:]
 
     let weatherService = WeatherService()
     var cancellables   = Set<AnyCancellable>()
@@ -84,7 +91,18 @@ final class AppViewModel: ObservableObject {
         didSet { saveWorkHours() }   // ← uppercase W
     }
 
-    // …
+    // MARK: - Published criteria with didSet observer
+    @Published var criteria: DayCriteria = UserDefaults.standard
+        .data(forKey: AppViewModel.criteriaKey)
+        .flatMap { try? JSONDecoder().decode(DayCriteria.self, from: $0) }
+        ?? DayCriteria() {
+        didSet {
+            saveCriteria()
+            cachedWindows = [:]
+            saveWindows()
+            prefetchWindows()
+        }
+    }
     
     private func saveWorkHours() {
         UserDefaults.standard.set(workStartHour, forKey: AppViewModel.workStartKey)
@@ -141,6 +159,7 @@ final class AppViewModel: ObservableObject {
         purgeExpiredWindows()
         requestNotificationPermission()
         weatherService.timezone = selectedTimezone
+        prefetchWindows()
     }
 
 
@@ -288,6 +307,108 @@ final class AppViewModel: ObservableObject {
         scheduleNotifications(for: city, windows: windows)
     }
 
+    /// Build a GoodWindow from a continuous slice of hourly forecasts
+    private func buildWindow(from slice: [HourlyForecast]) -> GoodWindow {
+        // convert all temps to Celsius internally
+        let tempsC = slice.map { useCelsius ? $0.temperature : ($0.temperature - 32) * 5 / 9 }
+        let maxUV = slice.map(\.uvIndex).max() ?? 0
+        let maxCloud = slice.map(\.cloudCover).max() ?? 0
+
+        return GoodWindow(
+            from: slice.first!.time,
+            to:   slice.last!.time,
+            minTemp: tempsC.min() ?? 0,
+            maxTemp: tempsC.max() ?? 0,
+            maxHumidity: slice.map(\.humidity).max() ?? 0,
+            maxUV: maxUV,
+            plan: nil,
+            skipped: false,
+            maxCloud: maxCloud
+        )
+    }
+
+    /// Split windows into before-work, during-work, and after-work slices
+    private func splitWindows(_ wins: [GoodWindow], workStart s: Int, workEnd e: Int) -> [GoodWindow] {
+        let cal = Calendar.current
+        // helper to stamp a date to a given hour
+        func stamp(_ ref: Date, hour: Int) -> Date {
+            cal.date(bySettingHour: hour, minute: 0, second: 0,
+                     of: cal.startOfDay(for: ref))!
+        }
+
+        var out: [GoodWindow] = []
+        for w in wins {
+            let ws = stamp(w.from, hour: s)
+            let we = stamp(w.from, hour: e)
+            // completely outside work
+            if w.to <= ws || w.from >= we {
+                out.append(w)
+                continue
+            }
+            // before work
+            if w.from < ws {
+                out.append(w.copy(from: w.from, to: ws))
+            }
+            // during work (always keep)
+            let midFrom = max(w.from, ws)
+            let midTo   = min(w.to,   we)
+            out.append(w.copy(from: midFrom, to: midTo))
+            // after work
+            if w.to > we {
+                out.append(w.copy(from: we, to: w.to))
+            }
+        }
+        return out.sorted { $0.from < $1.from }
+    }
+
+    /// Compute good-weather windows from hourly data (same logic as in CalendarView)
+    private func computeGoodWindows(from hours: [HourlyForecast]) -> [GoodWindow] {
+        guard !hours.isEmpty else { return [] }
+        let c = criteria
+        let toC: (Double) -> Double = { self.useCelsius ? $0 : ($0 - 32) * 5.0 / 9.0 }
+        func ok(_ h: HourlyForecast) -> Bool {
+            let tC = toC(h.temperature)
+            return tC >= c.tempMin && tC <= c.tempMax &&
+                   h.humidity <= c.humidityMax &&
+                   h.uvIndex  <= c.uvMax &&
+                   h.cloudCover  <= c.cloudCoverMax &&
+                   (c.precipitationAllowed || h.precipProb < 20)
+        }
+        var out: [GoodWindow] = []
+        var start: Int? = nil
+        for (i, h) in hours.enumerated() {
+            if ok(h) {
+                if start == nil { start = i }
+            } else if let s = start {
+                out.append(buildWindow(from: Array(hours[s..<i])))
+                start = nil
+            }
+        }
+        if let s = start {
+            out.append(buildWindow(from: Array(hours[s...])))
+        }
+        if let s = workStartHour, let e = workEndHour {
+            return splitWindows(out, workStart: s, workEnd: e)
+        }
+        return out
+    }
+
+    /// Prefetch hourly data and cache windows for all cities
+    func prefetchWindows() {
+        for city in cities {
+            weatherService.fetchHourly(for: city)
+                .receive(on: DispatchQueue.main)
+                .catch { _ in Just([]) }
+                .sink { [weak self] hrs in
+                    guard let self = self else { return }
+                    self.hourlyCache[city.id] = hrs
+                    let windows = self.computeGoodWindows(from: hrs)
+                    self.cacheWindows(for: city, windows: windows)
+                }
+                .store(in: &cancellables)
+        }
+    }
+
 
 }
 
@@ -307,6 +428,48 @@ struct DayCriteria: Codable {
     var uvMax                 : Double = 8
     var cloudCoverMax: Double = 50
     var precipitationAllowed  : Bool   = false
+}
+
+// MARK: - City Row View
+struct CityRowView: View {
+    let city: City
+    let currentTemp: Double?
+    let nextGoodWindow: GoodWindow?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(city.name)
+                    .font(.headline)
+                Spacer()
+                if let temp = currentTemp {
+                    Text("\(Int(temp))°")
+                        .font(.headline)
+                        .foregroundColor(.blue)
+                }
+            }
+            if let window = nextGoodWindow {
+                Text("Next good window: \(timeString(window.from)) – \(timeString(window.to))")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(LinearGradient(
+                    gradient: Gradient(colors: [Color(.systemBackground), Color(.secondarySystemBackground)]),
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing))
+                .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: 2)
+        )
+    }
+
+    private func timeString(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "EEE h a"
+        return df.string(from: date)
+    }
 }
 
 struct DailyForecast: Identifiable, Codable, Hashable {
@@ -584,46 +747,68 @@ struct CityListView: View {
     @State private var showingSettings = false
 
     var body: some View {
-        List {
-            ForEach(viewModel.cities) { city in
-            NavigationLink(value: city) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(city.name)
-                        if let sub = city.subtitle {
-                            Text(sub)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
+        ZStack {
+            Color(.systemBackground)
+                .ignoresSafeArea()
+            List {
+                ForEach(viewModel.cities) { city in
+                    NavigationLink(value: city) {
+                        CityRowView(
+                            city: city,
+                            currentTemp: viewModel.currentTemperatureForCity(city),
+                            nextGoodWindow: viewModel.nextGoodWindowForCity(city)
+                        )
+                        .listRowBackground(Color.clear)
                     }
+                    .listRowSeparator(.hidden)
+                }
+                .onDelete { offsets in
+                    viewModel.deleteCities(at: offsets)
+                }
             }
-            }
-            .onDelete { offsets in
-                viewModel.deleteCities(at: offsets)
-            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowSeparator(.hidden, edges: .all)
+            
         }
         .navigationTitle("Cities")
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                Button {
-                    showingSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                Button {
-                    showingAdd = true
-                } label: {
-                    Image(systemName: "plus")
-                }
+                Button { showingSettings = true } label: { Image(systemName: "gearshape") }
+                Button { showingAdd = true } label: { Image(systemName: "plus") }
             }
         }
         .sheet(isPresented: $showingAdd) {
-            AddCityView()
-                .environmentObject(viewModel)
+            AddCityView().environmentObject(viewModel)
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsView()
-                .environmentObject(viewModel)
+            SettingsView().environmentObject(viewModel)
         }
+    }
+}
+// MARK: - AppViewModel helpers for CityRowView
+extension AppViewModel {
+    func currentTemperatureForCity(_ city: City) -> Double? {
+        guard let hours = hourlyCache[city.id], !hours.isEmpty else { return nil }
+        let now = Date()
+        // Find the most recent forecast at or before now
+        let past = hours.filter { $0.time <= now }
+        let window = (past.isEmpty ? hours : past)
+            .sorted(by: { $0.time > $1.time })
+            .first!
+        let tempC = window.temperature
+        return useCelsius ? tempC : (tempC * 9/5 + 32)
+    }
+
+    func nextGoodWindowForCity(_ city: City) -> GoodWindow? {
+        guard let windows = cachedWindows[city.id] else { return nil }
+        let now = Date()
+        return windows
+            .filter { !$0.skipped && $0.to > now }
+            .sorted(by: { $0.from < $1.from })
+            .first
     }
 }
 
