@@ -830,15 +830,42 @@ extension AppViewModel {
         let hour = (past.isEmpty ? hours : past)
             .sorted(by: { $0.time > $1.time })
             .first!
+
         var reasons: [String] = []
-        let tempC = hour.temperature
-        if tempC < criteria.tempMin { reasons.append("Temp too low") }
-        if tempC > criteria.tempMax { reasons.append("Temp too high") }
-        if hour.humidity > criteria.humidityMax { reasons.append("Humidity too high") }
-        if hour.uvIndex > criteria.uvMax { reasons.append("UV index too high") }
+
+        // ---------- Temperature ----------
+        let displayedTemp = useCelsius
+            ? hour.temperature
+            : hour.temperature * 9 / 5 + 32
+        let tempUnit  = useCelsius ? "°C" : "°F"
+        let tempRange = "\(Int(criteria.tempMin))–\(Int(criteria.tempMax))\(tempUnit)"
+        if displayedTemp < criteria.tempMin {
+            reasons.append("\(Int(displayedTemp))\(tempUnit) < \(tempRange)")
+        } else if displayedTemp > criteria.tempMax {
+            reasons.append("\(Int(displayedTemp))\(tempUnit) > \(tempRange)")
+        }
+
+        // ---------- Humidity ----------
+        if hour.humidity > criteria.humidityMax {
+            reasons.append("\(Int(hour.humidity))% > \(Int(criteria.humidityMax))%")
+        }
+
+        // ---------- UV Index ----------
+        if hour.uvIndex > criteria.uvMax {
+            let uvStr = String(format: "%.1f", hour.uvIndex)
+            reasons.append("UV \(uvStr) > \(Int(criteria.uvMax))")
+        }
+
+        // ---------- Cloud Cover ----------
+        if hour.cloudCover > criteria.cloudCoverMax {
+            reasons.append("Cloud \(Int(hour.cloudCover))% > \(Int(criteria.cloudCoverMax))%")
+        }
+
+        // ---------- Precipitation ----------
         if hour.precipProb > criteria.precipProbMax {
             reasons.append("Precip \(Int(hour.precipProb))% > \(Int(criteria.precipProbMax))%")
         }
+
         return reasons
     }
 }
