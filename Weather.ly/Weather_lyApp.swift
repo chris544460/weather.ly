@@ -847,7 +847,7 @@ extension AppViewModel {
 
         // ---------- Humidity ----------
         if hour.humidity > criteria.humidityMax {
-            reasons.append("\(Int(hour.humidity))% > \(Int(criteria.humidityMax))%")
+            reasons.append("Humid \(Int(hour.humidity))% > \(Int(criteria.humidityMax))%")
         }
 
         // ---------- UV Index ----------
