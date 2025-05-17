@@ -323,7 +323,8 @@ final class AppViewModel: ObservableObject {
             maxUV: maxUV,
             plan: nil,
             skipped: false,
-            maxCloud: maxCloud
+            maxCloud: maxCloud,
+            confidence: nil
         )
     }
 
@@ -403,11 +404,78 @@ final class AppViewModel: ObservableObject {
                 .sink { [weak self] hrs in
                     guard let self = self else { return }
                     self.hourlyCache[city.id] = hrs
-                    let windows = self.computeGoodWindows(from: hrs)
+                    var windows = self.computeGoodWindows(from: hrs)
                     self.cacheWindows(for: city, windows: windows)
+                    // Compute confidence scores asynchronously
+                    Task {
+                        let scored = await self.addConfidence(to: windows, for: city, hours: hrs)
+                        DispatchQueue.main.async {
+                            self.cacheWindows(for: city, windows: scored)
+                        }
+                    }
                 }
                 .store(in: &cancellables)
         }
+    }
+
+    /// Fetch ensemble data and compute confidence scores for windows
+    private func addConfidence(to windows: [GoodWindow], for city: City, hours: [HourlyForecast]) async -> [GoodWindow] {
+        do {
+            let temps = try await weatherService.fetchEnsembleForecast(for: city, models: ["icon_seamless"])
+            let precip = try await weatherService.fetchEnsemblePrecipForecast(for: city, models: ["icon_seamless"])
+            return computeConfidence(windows: windows, hours: hours, tempResponses: temps, precipResponses: precip)
+        } catch {
+            print("Failed to fetch ensembles for \(city.name):", error)
+            return windows
+        }
+    }
+
+    /// Build dictionary of values per time from ensemble responses
+    private func buildValueDict(from responses: [WeatherApiResponse]) -> [Date: [Double]] {
+        var dict: [Date: [Double]] = [:]
+        for resp in responses {
+            guard let hourly = resp.hourly else { continue }
+            let memberCount = Int(hourly.variablesCount)
+            let times = hourly.getDateTime(offset: 0)
+            for m in 0..<memberCount {
+                let vals = hourly.variables(at: Int32(m))?.values ?? []
+                for (t, v) in zip(times, vals) {
+                    guard v.isFinite else { continue }
+                    dict[t, default: []].append(Double(v))
+                }
+            }
+        }
+        return dict
+    }
+
+    /// Compute per-window confidence using ensemble temperatures and precipitation
+    private func computeConfidence(windows: [GoodWindow], hours: [HourlyForecast], tempResponses: [WeatherApiResponse], precipResponses: [WeatherApiResponse]) -> [GoodWindow] {
+        let tempDict = buildValueDict(from: tempResponses)
+        let precipDict = buildValueDict(from: precipResponses)
+        var scored: [GoodWindow] = []
+        for var w in windows {
+            let slice = hours.filter { $0.time >= w.from && $0.time <= w.to }
+            var hourProbs: [Double] = []
+            for h in slice {
+                let temps = tempDict[h.time] ?? []
+                let rains = precipDict[h.time] ?? []
+                let count = min(temps.count, rains.count)
+                guard count > 0 else { continue }
+                var ok = 0
+                for i in 0..<count {
+                    let tC = temps[i]
+                    let tempOk = tC >= criteria.tempMin && tC <= criteria.tempMax
+                    let rainOk = rains[i] <= criteria.precipProbMax
+                    if tempOk && rainOk { ok += 1 }
+                }
+                hourProbs.append(Double(ok) / Double(count))
+            }
+            if !hourProbs.isEmpty {
+                w.confidence = hourProbs.reduce(0, +) / Double(hourProbs.count)
+            }
+            scored.append(w)
+        }
+        return scored
     }
 
 
@@ -515,6 +583,8 @@ struct GoodWindow: Identifiable, Codable, Hashable {
     /// Set `true` once the user explicitly decides to skip this window
     var skipped: Bool = false
     let maxCloud : Double
+    /// Probability that all hours stay within the criteria
+    var confidence: Double? = nil
 }
 // MARK: - GoodWindow helpers
 extension GoodWindow {
@@ -529,7 +599,8 @@ extension GoodWindow {
                    maxUV: maxUV,
                    plan: plan,
                    skipped: skipped,
-                   maxCloud: maxCloud)
+                   maxCloud: maxCloud,
+                   confidence: confidence)
     }
 }
 
@@ -957,6 +1028,11 @@ struct CalendarView: View {
                                             .font(.caption2).foregroundColor(.secondary)
                                         Text("≤\(Int(w.maxCloud)) % Cl")
                                             .font(.caption2).foregroundColor(.secondary)
+                                        if let c = w.confidence {
+                                            Text(String(format: "%.0f%%", c * 100))
+                                                .font(.caption2)
+                                                .foregroundColor(.green)
+                                        }
                                     }
                                 }
                             }
@@ -977,6 +1053,9 @@ struct CalendarView: View {
                     }
                     .listRowBackground(f.isGoodDay ? Color.green.opacity(0.25) : Color.clear)
                 }
+                Text("Confidence uses ensemble temperature and precipitation only.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
             }
 
             if let err = errorMessage {
@@ -1150,7 +1229,8 @@ struct CalendarView: View {
             maxUV : maxUV,
             plan: nil,
             skipped: false,
-            maxCloud: maxCloud
+            maxCloud: maxCloud,
+            confidence: nil
         )
     }
     
@@ -1634,6 +1714,16 @@ struct GoodWindowDetailView: View {
                             .foregroundColor(.teal)
                     }
                 }
+            }
+            Section(header: Text("Confidence")) {
+                if let c = window.confidence {
+                    Text(String(format: "%.0f%% chance", c * 100))
+                } else {
+                    Text("Calculating...").foregroundColor(.secondary)
+                }
+                Text("Based on temperature and precipitation ensembles only.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
             }
             // MARK: - Temperature percentiles
             Section(header: Text("Percentiles Table (Temperature")) {
