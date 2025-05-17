@@ -623,7 +623,11 @@ final class WeatherService {
                     let humidity = h.relative_humidity_2m?[safe: i] ?? nil
                     let precip   = h.precipitation_probability?[safe: i] ?? nil
                     let uv = h.uv_index?[safe:i] ?? nil
+
                     let cloud = h.cloud_cover_low?[safe:i] ?? nil
+                    // Open-Meteo defines 0 as clear and 100 as fully
+                    // overcast. Invert so 0 means fully cloudy for UI/logic.
+                    let invCloud = cloud.map { 100 - $0 }
 
                     out.append(
                         HourlyForecast(
@@ -632,7 +636,7 @@ final class WeatherService {
                             humidity: humidity ?? 0,
                             precipProb: precip ?? 0,
                             uvIndex: uv ?? 0,
-                            cloudCover: cloud ?? 0
+                            cloudCover: invCloud ?? 0
                         )
                     )
                 }
