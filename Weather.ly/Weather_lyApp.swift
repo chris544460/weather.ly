@@ -371,6 +371,7 @@ final class AppViewModel: ObservableObject {
             return tC >= c.tempMin && tC <= c.tempMax &&
                 h.humidity <= c.humidityMax &&
                 h.uvIndex <= c.uvMax &&
+                h.cloudCover >= c.cloudCoverMin &&
                 h.cloudCover <= c.cloudCoverMax &&
                 h.precipProb <= c.precipProbMax
         }
@@ -426,6 +427,7 @@ struct DayCriteria: Codable {
     var tempMax               : Double = 25
     var humidityMax           : Double = 60
     var uvMax                 : Double = 8
+    var cloudCoverMin: Double = 0
     var cloudCoverMax: Double = 50
 //    var precipitationAllowed  : Bool   = false
     var precipProbMax: Double = 20
@@ -861,8 +863,8 @@ extension AppViewModel {
         }
 
         // ---------- Cloud Cover ----------
-        if hour.cloudCover > criteria.cloudCoverMax {
-            reasons.append("Cloud \(Int(hour.cloudCover))% > \(Int(criteria.cloudCoverMax))%")
+        if hour.cloudCover < criteria.cloudCoverMin || hour.cloudCover > criteria.cloudCoverMax {
+            reasons.append("Cloud \(Int(hour.cloudCover))% not in \(Int(criteria.cloudCoverMin))–\(Int(criteria.cloudCoverMax))%")
         }
 
         // ---------- Precipitation ----------
@@ -1110,6 +1112,7 @@ struct CalendarView: View {
             return tC >= c.tempMin && tC <= c.tempMax &&
                 h.humidity <= c.humidityMax &&
                 h.uvIndex <= c.uvMax &&
+                h.cloudCover >= c.cloudCoverMin &&
                 h.cloudCover <= c.cloudCoverMax &&
                 h.precipProb <= c.precipProbMax
         }
@@ -1911,12 +1914,14 @@ struct SettingsView: View {
                                  .foregroundColor(.secondary) }
                 }
                 
-                // -- Max cloud cover
+                // -- Cloud cover range
                 Button { activePicker = .cloud } label: {
-                    HStack { Text("Max Cloud %")
+                    HStack {
+                        Text("Cloud % Range")
                         Spacer()
-                        Text("\(Int(viewModel.criteria.cloudCoverMax)) %")
-                            .foregroundColor(.secondary) }
+                        Text("\(Int(viewModel.criteria.cloudCoverMin))–\(Int(viewModel.criteria.cloudCoverMax)) %")
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
                 // Max precipitation probability
@@ -2006,8 +2011,13 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         // ---------- modal sheet ----------
         .sheet(item: $activePicker) { kind in
-            ValuePickerSheet(kind: kind)
-                .environmentObject(viewModel)
+            if kind == .cloud {
+                CloudRangePickerSheet()
+                    .environmentObject(viewModel)
+            } else {
+                ValuePickerSheet(kind: kind)
+                    .environmentObject(viewModel)
+            }
         }
         .sheet(isPresented: $showLeadPicker) {
             LeadTimePickerSheet()
@@ -2166,7 +2176,7 @@ private struct ValuePickerSheet: View {
         case .maxTemp:  return "Max Temp"
         case .humidity: return "Max Humidity %"
         case .uv:       return "Max UV Index"
-        case .cloud:   return "Max Cloud %"
+        case .cloud:   return "Cloud %"
         case .workStart: return "Work starts"
         case .workEnd:   return "Work ends"
         }
@@ -2255,10 +2265,63 @@ private struct LeadTimePickerSheet: View {
     }
 
     // helper range based on unit
-    private func range(for unit: Unit) -> [Int] {
+private func range(for unit: Unit) -> [Int] {
         switch unit {
         case .hours: return Array(1...23)          // 1–23 h
         case .days:  return Array(1...30)          // 1–30 d (up to a month)
+        }
+    }
+}
+
+// MARK: CloudRangePickerSheet – min/max cloud wheels
+private struct CloudRangePickerSheet: View {
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var viewModel: AppViewModel
+
+    @State private var minValue: Double = 0
+    @State private var maxValue: Double = 100
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                HStack {
+                    Picker("", selection: $minValue) {
+                        ForEach(0...100, id: \.self) { v in
+                            Text("\(v)%").tag(Double(v))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .pickerStyle(.wheel)
+
+                    Picker("", selection: $maxValue) {
+                        ForEach(0...100, id: \.self) { v in
+                            Text("\(v)%").tag(Double(v))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .pickerStyle(.wheel)
+                }
+
+                Text("\(Int(minValue))–\(Int(maxValue)) %")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            .navigationTitle("Cloud % Range")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        if minValue > maxValue { swap(&minValue, &maxValue) }
+                        viewModel.criteria.cloudCoverMin = minValue
+                        viewModel.criteria.cloudCoverMax = maxValue
+                        viewModel.saveCriteria()
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                minValue = viewModel.criteria.cloudCoverMin
+                maxValue = viewModel.criteria.cloudCoverMax
+            }
         }
     }
 }
