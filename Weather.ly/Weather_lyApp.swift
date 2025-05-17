@@ -627,10 +627,11 @@ final class WeatherService {
                     let precip   = h.precipitation_probability?[safe: i] ?? nil
                     let uv = h.uv_index?[safe:i] ?? nil
 
-                    let cloud = h.cloud_cover_low?[safe:i] ?? nil
+
                     // Open‑Meteo returns cloud cover where 0 is clear and 100 is
                     // overcast. Treat this as visibility by inverting the value.
                     let visibility = cloud.map { 100 - $0 }
+
 
                     out.append(
                         HourlyForecast(
