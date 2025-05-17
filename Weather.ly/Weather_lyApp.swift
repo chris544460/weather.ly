@@ -312,7 +312,7 @@ final class AppViewModel: ObservableObject {
         // convert all temps to Celsius internally
         let tempsC = slice.map { useCelsius ? $0.temperature : ($0.temperature - 32) * 5 / 9 }
         let maxUV = slice.map(\.uvIndex).max() ?? 0
-        let maxCloud = slice.map(\.cloudCover).max() ?? 0
+        let minVis = slice.map(\.visibility).min() ?? 0
 
         return GoodWindow(
             from: slice.first!.time,
@@ -323,7 +323,7 @@ final class AppViewModel: ObservableObject {
             maxUV: maxUV,
             plan: nil,
             skipped: false,
-            maxCloud: maxCloud
+            minVisibility: minVis
         )
     }
 
@@ -371,7 +371,7 @@ final class AppViewModel: ObservableObject {
             return tC >= c.tempMin && tC <= c.tempMax &&
                 h.humidity <= c.humidityMax &&
                 h.uvIndex <= c.uvMax &&
-                h.cloudCover <= c.cloudCoverMax &&
+                h.visibility >= c.visibilityMin &&
                 h.precipProb <= c.precipProbMax
         }
         var out: [GoodWindow] = []
@@ -426,7 +426,8 @@ struct DayCriteria: Codable {
     var tempMax               : Double = 25
     var humidityMax           : Double = 60
     var uvMax                 : Double = 8
-    var cloudCoverMax: Double = 50
+    /// Minimum acceptable visibility percentage
+    var visibilityMin: Double = 50
 //    var precipitationAllowed  : Bool   = false
     var precipProbMax: Double = 20
 }
@@ -497,7 +498,8 @@ struct HourlyForecast: Identifiable, Codable, Hashable {
     var humidity    : Double
     var precipProb  : Double
     var uvIndex     : Double
-    var cloudCover : Double
+    /// Visibility percentage where 100 means perfectly clear
+    var visibility : Double
 }
 /// Continuous block where every hour meets the user’s criteria
 struct GoodWindow: Identifiable, Codable, Hashable {
@@ -512,7 +514,8 @@ struct GoodWindow: Identifiable, Codable, Hashable {
     var plan: String? = nil
     /// Set `true` once the user explicitly decides to skip this window
     var skipped: Bool = false
-    let maxCloud : Double
+    /// Lowest visibility percentage within the window
+    let minVisibility : Double
 }
 // MARK: - GoodWindow helpers
 extension GoodWindow {
@@ -527,7 +530,7 @@ extension GoodWindow {
                    maxUV: maxUV,
                    plan: plan,
                    skipped: skipped,
-                   maxCloud: maxCloud)
+                   minVisibility: minVisibility)
     }
 }
 
@@ -623,7 +626,11 @@ final class WeatherService {
                     let humidity = h.relative_humidity_2m?[safe: i] ?? nil
                     let precip   = h.precipitation_probability?[safe: i] ?? nil
                     let uv = h.uv_index?[safe:i] ?? nil
+
                     let cloud = h.cloud_cover_low?[safe:i] ?? nil
+                    // Open‑Meteo returns cloud cover where 0 is clear and 100 is
+                    // overcast. Treat this as visibility by inverting the value.
+                    let visibility = cloud.map { 100 - $0 }
 
                     out.append(
                         HourlyForecast(
@@ -632,7 +639,7 @@ final class WeatherService {
                             humidity: humidity ?? 0,
                             precipProb: precip ?? 0,
                             uvIndex: uv ?? 0,
-                            cloudCover: cloud ?? 0
+                            visibility: visibility ?? 0
                         )
                     )
                 }
@@ -856,9 +863,9 @@ extension AppViewModel {
             reasons.append("UV \(uvStr) > \(Int(criteria.uvMax))")
         }
 
-        // ---------- Cloud Cover ----------
-        if hour.cloudCover > criteria.cloudCoverMax {
-            reasons.append("Cloud \(Int(hour.cloudCover))% > \(Int(criteria.cloudCoverMax))%")
+        // ---------- Visibility ----------
+        if hour.visibility < criteria.visibilityMin {
+            reasons.append("Vis \(Int(hour.visibility))% < \(Int(criteria.visibilityMin))%")
         }
 
         // ---------- Precipitation ----------
@@ -949,7 +956,7 @@ struct CalendarView: View {
                                             .font(.caption2).foregroundColor(.secondary)
                                         Text("≤\(Int(w.maxHumidity)) % RH")
                                             .font(.caption2).foregroundColor(.secondary)
-                                        Text("≤\(Int(w.maxCloud)) % Cl")
+                                        Text("≥\(Int(w.minVisibility)) % Vis")
                                             .font(.caption2).foregroundColor(.secondary)
                                     }
                                 }
@@ -1106,7 +1113,7 @@ struct CalendarView: View {
             return tC >= c.tempMin && tC <= c.tempMax &&
                 h.humidity <= c.humidityMax &&
                 h.uvIndex <= c.uvMax &&
-                h.cloudCover <= c.cloudCoverMax &&
+                h.visibility >= c.visibilityMin &&
                 h.precipProb <= c.precipProbMax
         }
 
@@ -1132,7 +1139,7 @@ struct CalendarView: View {
     private func buildWindow(from slice: [HourlyForecast]) -> GoodWindow {
         let tempsC = slice.map { viewModel.useCelsius ? $0.temperature : ($0.temperature - 32) * 5 / 9 }
         let maxUV = slice.map(\.uvIndex).max() ?? 0
-        let maxCloud = slice.map(\.cloudCover).max() ?? 0
+        let minVis = slice.map(\.visibility).min() ?? 0
 
         return GoodWindow(
             from: slice.first!.time,
@@ -1143,7 +1150,7 @@ struct CalendarView: View {
             maxUV : maxUV,
             plan: nil,
             skipped: false,
-            maxCloud: maxCloud
+            minVisibility: minVis
         )
     }
     
@@ -1264,7 +1271,7 @@ struct DayDetailView: View {
                 .frame(width: 35, alignment: .trailing)
                 .foregroundColor(.purple)
             Spacer()
-            Text("\(Int(h.cloudCover)) %")
+            Text("\(Int(h.visibility)) %")
                 .frame(width: 40, alignment: .trailing)
                 .foregroundColor(.teal)
         }
@@ -1622,7 +1629,7 @@ struct GoodWindowDetailView: View {
                             .frame(width: 40, alignment: .trailing)
                             .foregroundColor(.purple)
                         Spacer()
-                        Text("\(Int(h.cloudCover)) %")
+                        Text("\(Int(h.visibility)) %")
                             .frame(width: 40, alignment: .trailing)
                             .foregroundColor(.teal)
                     }
@@ -1857,7 +1864,7 @@ struct SettingsView: View {
     // Which picker is currently shown
     @State private var activePicker: PickerKind?
     @State private var showLeadPicker = false
-    enum PickerKind { case minTemp, maxTemp, humidity, uv, cloud, workStart, workEnd }
+    enum PickerKind { case minTemp, maxTemp, humidity, uv, visibility, workStart, workEnd }
 
     var body: some View {
         Form {
@@ -1907,11 +1914,11 @@ struct SettingsView: View {
                                  .foregroundColor(.secondary) }
                 }
                 
-                // -- Max cloud cover
-                Button { activePicker = .cloud } label: {
-                    HStack { Text("Max Cloud %")
+                // -- Minimum visibility
+                Button { activePicker = .visibility } label: {
+                    HStack { Text("Min Visibility %")
                         Spacer()
-                        Text("\(Int(viewModel.criteria.cloudCoverMax)) %")
+                        Text("\(Int(viewModel.criteria.visibilityMin)) %")
                             .foregroundColor(.secondary) }
                 }
                 
@@ -2044,7 +2051,7 @@ private struct ValuePickerSheet: View {
     @State private var tempValue: Double = 0
     @State private var humidityValue: Double = 0
     @State private var uvValue: Double = 0
-    @State private var cloudValue: Double = 0
+    @State private var visibilityValue: Double = 0
     @State private var hourValue: Double = 9
 
     var body: some View {
@@ -2080,7 +2087,7 @@ private struct ValuePickerSheet: View {
                 case .maxTemp:    tempValue = viewModel.criteria.tempMax
                 case .humidity:   humidityValue = viewModel.criteria.humidityMax
                 case .uv:       uvValue      = viewModel.criteria.uvMax
-                case .cloud:   cloudValue = viewModel.criteria.cloudCoverMax
+                case .visibility: visibilityValue = viewModel.criteria.visibilityMin
                 case .workStart: hourValue = Double(viewModel.workStartHour ?? 9)
                 case .workEnd:   hourValue = Double(viewModel.workEndHour ?? 17)
                 @unknown default: break
@@ -2122,10 +2129,10 @@ private struct ValuePickerSheet: View {
                     viewModel.saveCriteria()
                 })
             
-        case .cloud:
-            return Binding(get:{ cloudValue }, set:{ new in
-                cloudValue = new
-                viewModel.criteria.cloudCoverMax = new
+        case .visibility:
+            return Binding(get:{ visibilityValue }, set:{ new in
+                visibilityValue = new
+                viewModel.criteria.visibilityMin = new
                 viewModel.saveCriteria()
             })
         case .workStart:
@@ -2147,7 +2154,7 @@ private struct ValuePickerSheet: View {
         case .humidity:
             return "\(Int(v)) %"
         case .uv:       return "\(Int(v))"
-        case .cloud:   return "\(Int(v)) %"
+        case .visibility: return "\(Int(v)) %"
         case .workStart, .workEnd: return "\(Int(v)):00"
         default:
             return "\(Int(v))°"
@@ -2162,7 +2169,7 @@ private struct ValuePickerSheet: View {
         case .maxTemp:  return "Max Temp"
         case .humidity: return "Max Humidity %"
         case .uv:       return "Max UV Index"
-        case .cloud:   return "Max Cloud %"
+        case .visibility: return "Min Visibility %"
         case .workStart: return "Work starts"
         case .workEnd:   return "Work ends"
         }
@@ -2175,7 +2182,7 @@ private struct ValuePickerSheet: View {
             return Array(0...100).map { Double($0) }
         case .uv:
             return Array(0...11).map { Double($0) }
-        case .cloud:   return Array(0...100).map(Double.init)
+        case .visibility:   return Array(0...100).map(Double.init)
         case .workStart, .workEnd: return Array(0...23).map(Double.init)
         default:
             if viewModel.useCelsius {
