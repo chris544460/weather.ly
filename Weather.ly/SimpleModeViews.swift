@@ -10,13 +10,16 @@ struct SimpleCityListView: View {
         List {
             ForEach(viewModel.cities) { city in
                 NavigationLink(destination: SimpleForecastView(city: city)) {
-                    Text(city.name)
+                    SimpleCityCard(city: city)
+                        .padding(.vertical, 4)
                 }
+                .listRowBackground(Color.clear)
             }
             .onDelete { offsets in
                 viewModel.deleteCities(at: offsets)
             }
         }
+        .listStyle(.plain)
         .navigationTitle("Cities")
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
@@ -30,6 +33,34 @@ struct SimpleCityListView: View {
         .sheet(isPresented: $showingSettings) {
             SettingsView().environmentObject(viewModel)
         }
+    }
+}
+
+struct SimpleCityCard: View {
+    let city: City
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(city.name)
+                    .font(.headline)
+                    .foregroundColor(.white)
+                Text("Forecast")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .foregroundColor(.white.opacity(0.7))
+        }
+        .padding()
+        .background(
+            LinearGradient(
+                gradient: Gradient(colors: [Color.blue.opacity(0.8), Color.purple.opacity(0.8)]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -120,7 +151,6 @@ struct SimpleForecastView: View {
     private func hourRow(_ h: HourlyForecast) -> some View {
         let shownTemp = viewModel.useCelsius ? h.temperature : h.temperature * 9 / 5 + 32
         let unit = viewModel.useCelsius ? "°C" : "°F"
-
         HStack {
             Text(timeFormatter.string(from: h.time))
                 .frame(width: 55, alignment: .leading)
@@ -154,6 +184,12 @@ struct SimpleForecastView: View {
                     .foregroundColor(.teal)
             }
         }
+        .padding(.vertical, 6)
+        .padding(.horizontal)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
 
     private var timeFormatter: DateFormatter {
