@@ -90,19 +90,22 @@ struct SimpleForecastView: View {
                     Text("Show metrics:")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    HStack {
-                        ForEach(Metric.allCases) { metric in
-                            Button(action: { toggle(metric) }) {
-                                Text(metric.rawValue)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .fixedSize()
-                                    .padding(6)
-                                    .background(selectedMetrics.contains(metric) ? Color.accentColor.opacity(0.2) : Color.clear)
-                                    .cornerRadius(6)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Metric.allCases) { metric in
+                                Button(action: { toggle(metric) }) {
+                                    Text(metric.rawValue)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                        .padding(6)
+                                        .background(selectedMetrics.contains(metric) ? Color.accentColor.opacity(0.2) : Color.clear)
+                                        .cornerRadius(6)
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            .buttonStyle(.bordered)
                         }
+                        .padding(.horizontal, 4)
                     }
                 }
             }
