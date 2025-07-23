@@ -87,10 +87,7 @@ struct SimpleForecastView: View {
         case precipitation   = "Rain"
         case uv              = "UV Index"
         case cloud           = "Clear %"
-        case median          = "Median"
-        case lowerQuartile   = "Lower Quartile"
-        case upperQuartile   = "Upper Quartile"
-        case distribution    = "Distribution"
+        case distribution    = "Temperature Dist"
         case precipDistribution = "Rain Dist"
 
         var id: String { rawValue }
@@ -234,33 +231,6 @@ struct SimpleForecastView: View {
                 Spacer()
                 Text("\(Int(shownTemp))\(unit)")
                     .frame(width: 60, alignment: .trailing)
-            }
-
-            if selectedMetrics.contains(.median) {
-                Spacer()
-                let median = ensembleMedian[h.time]
-                let shown  = median.map { viewModel.useCelsius ? $0 : $0 * 9 / 5 + 32 }
-                Text(median != nil ? "\(Int(shown!))\(unit)" : "--")
-                    .frame(width: 70, alignment: .trailing)
-                    .foregroundColor(.green)
-            }
-
-            if selectedMetrics.contains(.lowerQuartile) {
-                Spacer()
-                let lq    = ensembleLowerQuartile[h.time]
-                let shown = lq.map { viewModel.useCelsius ? $0 : $0 * 9 / 5 + 32 }
-                Text(lq != nil ? "\(Int(shown!))\(unit)" : "--")
-                    .frame(width: 80, alignment: .trailing)
-                    .foregroundColor(.orange)
-            }
-
-            if selectedMetrics.contains(.upperQuartile) {
-                Spacer()
-                let uq    = ensembleUpperQuartile[h.time]
-                let shown = uq.map { viewModel.useCelsius ? $0 : $0 * 9 / 5 + 32 }
-                Text(uq != nil ? "\(Int(shown!))\(unit)" : "--")
-                    .frame(width: 80, alignment: .trailing)
-                    .foregroundColor(.pink)
             }
 
             if selectedMetrics.contains(.distribution) {
@@ -430,7 +400,7 @@ struct SimpleForecastView: View {
         return (lowerQ, upperQ)
     }
 
-    // MARK: Column Headers ----------------------------------------------------
+    // MARK: Column Headers --------------------------------------------------
 
     private struct ColumnHeaders: View {
         let metrics: Set<Metric>
@@ -439,10 +409,7 @@ struct SimpleForecastView: View {
             HStack {
                 Text("Time").frame(width: 55, alignment: .leading)
                 if metrics.contains(.temperature)   { Spacer(); Text("Temp").frame(width: 55, alignment: .trailing) }
-                if metrics.contains(.median)        { Spacer(); Text("Median").frame(width: 70, alignment: .trailing) }
-                if metrics.contains(.lowerQuartile) { Spacer(); Text("Lower Q").frame(width: 80, alignment: .trailing) }
-                if metrics.contains(.upperQuartile) { Spacer(); Text("Upper Q").frame(width: 80, alignment: .trailing) }
-                if metrics.contains(.distribution)  { Spacer(); Text("Dist").frame(width: 100, alignment: .center) }
+                if metrics.contains(.distribution)  { Spacer(); Text("Temperature Dist").frame(width: 100, alignment: .center) }
                 if metrics.contains(.precipDistribution) { Spacer(); Text("Rain Dist").frame(width: 100, alignment: .center) }
                 if metrics.contains(.humidity)      { Spacer(); Text("Humidity").frame(width: 65, alignment: .trailing) }
                 if metrics.contains(.precipitation) { Spacer(); Text("Rain").frame(width: 45, alignment: .trailing) }
@@ -515,22 +482,27 @@ private struct PrecipDistributionCurve: View {
 
     var body: some View {
         GeometryReader { geo in
-            if let lower, let median, let upper, upper > lower {
+            if let lower, let median, let upper {
                 let centerY = geo.size.height / 2
-                let ratio   = CGFloat((median - lower) / (upper - lower))
-                let dotX    = geo.size.width * ratio
+                // Handle degenerate case where all ensemble members agree (upper == lower)
+                let denom  = upper - lower
+                let ratio  = denom > 0 ? CGFloat((median - lower) / denom) : 0.5
+                let dotX   = geo.size.width * ratio
 
+                // Draw a baseline; if denom == 0 we still draw a faint stub to make it visible.
                 Path { p in
                     p.move(to: .init(x: 0, y: centerY))
                     p.addLine(to: .init(x: geo.size.width, y: centerY))
                 }
                 .stroke(Color.accentColor.opacity(0.6), lineWidth: 2)
 
+                // Median dot
                 Circle()
                     .frame(width: 6, height: 6)
                     .position(x: dotX, y: centerY)
                     .foregroundColor(.accentColor)
 
+                // Numeric labels
                 Group {
                     Text(String(format: "%.1f", lower))
                         .font(.system(size: 8))
