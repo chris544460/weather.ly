@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import OpenMeteoSdk
 
 struct SimpleCityListView: View {
     @EnvironmentObject var viewModel: AppViewModel
@@ -72,6 +73,7 @@ struct SimpleForecastView: View {
     @State private var cancellables = Set<AnyCancellable>()
     @State private var selectedMetrics: Set<Metric> = [.temperature]
     @State private var selectedDayIndex = 0
+    @State private var ensembleMedian: [Date: Double] = [:]
 
     enum Metric: String, CaseIterable, Identifiable {
         case temperature   = "Temp"
@@ -79,6 +81,7 @@ struct SimpleForecastView: View {
         case precipitation = "Rain"
         case uv            = "UV Index"
         case cloud         = "Clear %"
+        case median        = "Median"
 
         var id: String { rawValue }
     }
@@ -139,6 +142,18 @@ struct SimpleForecastView: View {
                     selectedDayIndex = 0
                 })
                 .store(in: &cancellables)
+
+            Task {
+                do {
+                    let res = try await viewModel.weatherService
+                        .fetchEnsembleForecast(for: city, models: ["icon_seamless"])
+                    if let dict = buildMedianDict(from: res) {
+                        DispatchQueue.main.async { ensembleMedian = dict }
+                    }
+                } catch {
+                    print("Failed to fetch ensemble median:", error)
+                }
+            }
         }
     }
 
@@ -163,6 +178,14 @@ struct SimpleForecastView: View {
                 Spacer()
                 Text("\(Int(shownTemp))\(unit)")
                     .frame(width: 60, alignment: .trailing)
+            }
+            if selectedMetrics.contains(.median) {
+                Spacer()
+                let median = ensembleMedian[h.time]
+                let shownMedian = median.map { viewModel.useCelsius ? $0 : $0 * 9 / 5 + 32 }
+                Text(median != nil ? "\(Int(shownMedian!))\(unit)" : "--")
+                    .frame(width: 70, alignment: .trailing)
+                    .foregroundColor(.green)
             }
             if selectedMetrics.contains(.humidity) {
                 Spacer()
@@ -203,6 +226,25 @@ struct SimpleForecastView: View {
         return df
     }
 
+    private func buildMedianDict(from responses: [WeatherApiResponse]) -> [Date: Double]? {
+        guard let resp = responses.first, let hourly = resp.hourly else { return nil }
+        let memberCount = Int(hourly.variablesCount)
+        let times = hourly.getDateTime(offset: 0)
+        var allValues: [Date: [Double]] = [:]
+        for m in 0..<memberCount {
+            let values = hourly.variables(at: Int32(m))?.values ?? []
+            for (t, v) in zip(times, values) where v.isFinite {
+                allValues[t, default: []].append(Double(v))
+            }
+        }
+        var medians: [Date: Double] = [:]
+        for (t, vals) in allValues {
+            let sorted = vals.sorted()
+            medians[t] = sorted[sorted.count / 2]
+        }
+        return medians
+    }
+
     private struct ColumnHeaders: View {
         let metrics: Set<Metric>
 
@@ -212,6 +254,10 @@ struct SimpleForecastView: View {
                 if metrics.contains(.temperature) {
                     Spacer()
                     Text("Temp").frame(width: 55, alignment: .trailing)
+                }
+                if metrics.contains(.median) {
+                    Spacer()
+                    Text("Median").frame(width: 70, alignment: .trailing)
                 }
                 if metrics.contains(.humidity) {
                     Spacer()
