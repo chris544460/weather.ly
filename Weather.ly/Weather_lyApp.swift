@@ -28,13 +28,20 @@ struct WeatherlyApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack(path: $viewModel.navigationPath) {
-                CityListView()
-                    .environmentObject(viewModel)
-                    .navigationDestination(for: City.self) { city in
-                        CalendarView(city: city)
-                            .environmentObject(viewModel)
-                    }
+            if viewModel.advancedMode {
+                NavigationStack(path: $viewModel.navigationPath) {
+                    CityListView()
+                        .environmentObject(viewModel)
+                        .navigationDestination(for: City.self) { city in
+                            CalendarView(city: city)
+                                .environmentObject(viewModel)
+                        }
+                }
+            } else {
+                NavigationStack {
+                    SimpleCityListView()
+                        .environmentObject(viewModel)
+                }
             }
         }
     }
@@ -78,6 +85,12 @@ final class AppViewModel: ObservableObject {
         (UserDefaults.standard.array(forKey: AppViewModel.notifyLeadHoursKey) as? [Int]) ?? [24] {
         didSet { saveNotificationPrefs() }
     }
+
+    /// User interface mode; false = simple, true = advanced
+    @Published var advancedMode: Bool =
+        UserDefaults.standard.object(forKey: AppViewModel.advancedModeKey) as? Bool ?? false {
+        didSet { saveAdvancedMode() }
+    }
     
     // new @Published properties (place with the other @Published vars)
     // MARK: – Published work‑hours prefs
@@ -107,6 +120,10 @@ final class AppViewModel: ObservableObject {
     private func saveWorkHours() {
         UserDefaults.standard.set(workStartHour, forKey: AppViewModel.workStartKey)
         UserDefaults.standard.set(workEndHour,   forKey: AppViewModel.workEndKey)
+    }
+
+    private func saveAdvancedMode() {
+        UserDefaults.standard.set(advancedMode, forKey: AppViewModel.advancedModeKey)
     }
 
     
@@ -139,6 +156,8 @@ final class AppViewModel: ObservableObject {
     private static let notifyEnabledKey   = "notifyEnabled"
     // savedNotifyLeadHours
     private static let notifyLeadHoursKey = "notifyLeadHours"
+    /// Persisted user preference for using the full featured interface
+    private static let advancedModeKey = "advancedMode"
     // new keys (put near the other static keys)
     private static let workStartKey = "workStartHour"
     private static let workEndKey   = "workEndHour"
@@ -2153,6 +2172,10 @@ struct SettingsView: View {
             }
             Section("Cards") {
                 Toggle("Show reasons on cards", isOn: $showReasons)
+            }
+
+            Section("Mode") {
+                Toggle("Advanced Mode", isOn: $viewModel.advancedMode)
             }
         }
         .navigationTitle("Settings")
