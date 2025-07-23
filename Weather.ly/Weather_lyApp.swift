@@ -1438,12 +1438,17 @@ struct DayDetailView: View {
                     Text("No chart data for this day.")
                         .foregroundColor(.secondary)
                 } else {
+                    let convert: (Double) -> Double = { temp in
+                        viewModel.useCelsius ? temp : temp * 9 / 5 + 32
+                    }
+                    let unitLabel = viewModel.useCelsius ? "Temp °C" : "Temp °F"
+
                     Chart {
                         // Original ensemble member points
                         ForEach(points) { point in
                             PointMark(
                                 x: .value("Time", point.time),
-                                y: .value("Temp °C", point.temperature)
+                                y: .value(unitLabel, convert(point.temperature))
                             )
                             .opacity(0.6)
                         }
@@ -1451,12 +1456,14 @@ struct DayDetailView: View {
                         ForEach(medianPoints) { mp in
                             PointMark(
                                 x: .value("Time", mp.time),
-                                y: .value("Temp °C", mp.temperature)
+                                y: .value(unitLabel, convert(mp.temperature))
                             )
                             .symbolSize(100)
                             .foregroundStyle(.black)
                         }
                     }
+                    .chartXAxisLabel("Time")
+                    .chartYAxisLabel(unitLabel)
                     .chartXAxis {
                         AxisMarks(values: .stride(by: .hour, count: 3))
                     }
@@ -1542,7 +1549,7 @@ struct DayDetailView: View {
                         ForEach(points) { point in
                             PointMark(
                                 x: .value("Time", point.time),
-                                y: .value("Precip (mm)", point.precipitation)
+                                y: .value("Precip (mm)", point.precipitation)
                             )
                             .opacity(0.6)
                         }
@@ -1550,12 +1557,14 @@ struct DayDetailView: View {
                         ForEach(medianPoints) { mp in
                             PointMark(
                                 x: .value("Time", mp.time),
-                                y: .value("Precip (mm)", mp.precipitation)
+                                y: .value("Precip (mm)", mp.precipitation)
                             )
                             .symbolSize(100)
                             .foregroundStyle(.black)
                         }
                     }
+                    .chartXAxisLabel("Time")
+                    .chartYAxisLabel("Precipitation (mm)")
                     .chartXAxis {
                         AxisMarks(values: .stride(by: .hour, count: 3))
                     }
