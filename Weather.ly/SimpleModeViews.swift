@@ -70,7 +70,7 @@ struct SimpleForecastView: View {
 
     @State private var hours: [HourlyForecast] = []
     @State private var cancellables = Set<AnyCancellable>()
-    @State private var selectedMetrics: Set<Metric> = Set(Metric.allCases)
+    @State private var selectedMetrics: Set<Metric> = [.temperature]
     @State private var selectedDayIndex = 0
 
     enum Metric: String, CaseIterable, Identifiable {
