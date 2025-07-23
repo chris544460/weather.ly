@@ -835,6 +835,8 @@ struct CityListView: View {
     @State private var showingSettings = false
     @State private var todaySelection: DailySelection?
     @AppStorage("showReasons") private var showReasons = false
+    @AppStorage("seenCityListHelp") private var seenHelp = false
+    @State private var showHelp = false
 
     var body: some View {
         ZStack {
@@ -893,6 +895,14 @@ struct CityListView: View {
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView().environmentObject(viewModel)
+        }
+        .onAppear {
+            if !seenHelp { showHelp = true }
+        }
+        .alert("Cities", isPresented: $showHelp) {
+            Button("Got it") { seenHelp = true }
+        } message: {
+            Text("Add cities with the plus button. Tap a city for forecasts and swipe to delete.")
         }
     }
 }
@@ -980,14 +990,19 @@ struct CalendarView: View {
     @State private var cancellables = Set<AnyCancellable>()
     @State private var errorMessage: String?
     @State private var showSettingsSheet = false
+    @AppStorage("forecastShowGoodWindows") private var showGood = false
+    @AppStorage("seenForecastHelp") private var seenHelp = false
+    @State private var showHelp = false
 
     var body: some View {
         VStack {
             Text("Forecast for \(city.name)").font(.headline)
 
             List {
+                Toggle("Show Good Windows", isOn: $showGood)
             // upcoming windows section (always visible)
-            Section(header: Text("Upcoming Good Windows")) {
+            if showGood {
+                Section(header: Text("Upcoming Good Windows")) {
                     if isLoadingGoodWindows {
                         HStack {
                             Spacer()
@@ -1039,6 +1054,7 @@ struct CalendarView: View {
                         }
                     }
                 }
+            }
 
                 // daily forecasts
                 ForEach(forecasts) { f in
@@ -1147,6 +1163,12 @@ struct CalendarView: View {
         .navigationDestination(for: GoodWindow.self) { w in
             GoodWindowDetailView(city: city, window: w)
                 .environmentObject(viewModel)
+        }
+        .onAppear { if !seenHelp { showHelp = true } }
+        .alert("Forecast", isPresented: $showHelp) {
+            Button("Got it") { seenHelp = true }
+        } message: {
+            Text("Toggle 'Show Good Windows' to view periods matching your criteria. Tap a day for details.")
         }
     }
 
@@ -1302,6 +1324,8 @@ struct DayDetailView: View {
 
     @State private var hours: [HourlyForecast] = []
     @State private var cancellables = Set<AnyCancellable>()
+    @AppStorage("seenDayDetailHelp") private var seenHelp = false
+    @State private var showHelp = false
 
     @State private var ensembleResponses: [WeatherApiResponse] = []
     @State private var ensemblePrecipResponses: [WeatherApiResponse] = []
@@ -1626,6 +1650,12 @@ struct DayDetailView: View {
                 ensemblePrecipResponses = tmpPrecResponses
             }
         }
+        .onAppear { if !seenHelp { showHelp = true } }
+        .alert("Day Details", isPresented: $showHelp) {
+            Button("Got it") { seenHelp = true }
+        } message: {
+            Text("Hourly breakdown and charts for the selected day.")
+        }
     }
 
     // Filter received 48 h list to the selected date
@@ -1662,6 +1692,8 @@ struct GoodWindowDetailView: View {
     // holds the API‐returned percentile distribution for this window
     @State private var percentiles: [HourlyPercentile] = []
     @State private var planText: String = ""
+    @AppStorage("seenWindowDetailHelp") private var seenHelp = false
+    @State private var showHelp = false
 
     init(city: City, window: GoodWindow) {
         self.city = city
@@ -1841,6 +1873,12 @@ struct GoodWindowDetailView: View {
                         .store(in: &cans)
                 }
                 .store(in: &cans)
+            if !seenHelp { showHelp = true }
+        }
+        .alert("Window Detail", isPresented: $showHelp) {
+            Button("Got it") { seenHelp = true }
+        } message: {
+            Text("Detailed forecast for this good window. Add a plan or skip it.")
         }
     }
 
@@ -1915,6 +1953,8 @@ struct AddCityView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @Environment(\.dismiss) var dismiss
     @StateObject private var search = CitySearchViewModel()
+    @AppStorage("seenAddCityHelp") private var seenHelp = false
+    @State private var showHelp = false
     
     var body: some View {
         NavigationStack {
@@ -1942,6 +1982,12 @@ struct AddCityView: View {
                 }
             }
             .navigationTitle("Add City")
+            .onAppear { if !seenHelp { showHelp = true } }
+            .alert("Add City", isPresented: $showHelp) {
+                Button("Got it") { seenHelp = true }
+            } message: {
+                Text("Search for a city and tap a result to add it to your list.")
+            }
         }
     }
 }
@@ -1950,6 +1996,8 @@ struct AddCityView: View {
 struct SettingsView: View {
     @EnvironmentObject var viewModel: AppViewModel
     @AppStorage("showReasons") private var showReasons = false
+    @AppStorage("seenSettingsHelp") private var seenHelp = false
+    @State private var showHelp = false
 
     // Which picker is currently shown
     @State private var activePicker: PickerKind?
@@ -2112,6 +2160,12 @@ struct SettingsView: View {
         .sheet(isPresented: $showLeadPicker) {
             LeadTimePickerSheet()
                 .environmentObject(viewModel)
+        }
+        .onAppear { if !seenHelp { showHelp = true } }
+        .alert("Settings", isPresented: $showHelp) {
+            Button("Got it") { seenHelp = true }
+        } message: {
+            Text("Adjust day criteria, units and alerts here.")
         }
     }
 
