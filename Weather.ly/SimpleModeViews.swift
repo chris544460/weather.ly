@@ -39,12 +39,42 @@ struct SimpleForecastView: View {
 
     @State private var hours: [HourlyForecast] = []
     @State private var cancellables = Set<AnyCancellable>()
+    @State private var selectedMetrics: Set<Metric> = Set(Metric.allCases)
+
+    enum Metric: String, CaseIterable, Identifiable {
+        case temperature = "Temp"
+        case humidity    = "RH"
+        case precipitation = "Rain"
+        case uv          = "UV"
+        case cloud       = "Cl"
+
+        var id: String { rawValue }
+    }
 
     var body: some View {
         List {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Show metrics:")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        ForEach(Metric.allCases) { metric in
+                            Button(action: { toggle(metric) }) {
+                                Text(metric.rawValue)
+                                    .font(.caption)
+                                    .padding(6)
+                                    .background(selectedMetrics.contains(metric) ? Color.accentColor.opacity(0.2) : Color.clear)
+                                    .cornerRadius(6)
+                            }
+                        }
+                    }
+                }
+            }
+
             ForEach(groupByDay(hours), id: \.0) { day, dayHours in
                 Section(header: Text(day, style: .date)) {
-                    ColumnHeaders()
+                    ColumnHeaders(metrics: selectedMetrics)
                     ForEach(dayHours) { hour in
                         hourRow(hour)
                     }
@@ -65,6 +95,11 @@ struct SimpleForecastView: View {
         return groups.keys.sorted().map { ($0, groups[$0]!.sorted { $0.time < $1.time }) }
     }
 
+    private func toggle(_ metric: Metric) {
+        if selectedMetrics.contains(metric) { selectedMetrics.remove(metric) }
+        else { selectedMetrics.insert(metric) }
+    }
+
     @ViewBuilder
     private func hourRow(_ h: HourlyForecast) -> some View {
         let shownTemp = viewModel.useCelsius ? h.temperature : h.temperature * 9 / 5 + 32
@@ -73,25 +108,35 @@ struct SimpleForecastView: View {
         HStack {
             Text(timeFormatter.string(from: h.time))
                 .frame(width: 55, alignment: .leading)
-            Spacer()
-            Text("\(Int(shownTemp))\(unit)")
-                .frame(width: 60, alignment: .trailing)
-            Spacer()
-            Text("\(Int(h.humidity)) %")
-                .frame(width: 50, alignment: .trailing)
-                .foregroundColor(.secondary)
-            Spacer()
-            Text("\(Int(h.precipProb)) %")
-                .frame(width: 45, alignment: .trailing)
-                .foregroundColor(.blue)
-            Spacer()
-            Text(String(format: "%.1f", h.uvIndex))
-                .frame(width: 35, alignment: .trailing)
-                .foregroundColor(.purple)
-            Spacer()
-            Text("\(Int(h.cloudCover)) %")
-                .frame(width: 40, alignment: .trailing)
-                .foregroundColor(.teal)
+            if selectedMetrics.contains(.temperature) {
+                Spacer()
+                Text("\(Int(shownTemp))\(unit)")
+                    .frame(width: 60, alignment: .trailing)
+            }
+            if selectedMetrics.contains(.humidity) {
+                Spacer()
+                Text("\(Int(h.humidity)) %")
+                    .frame(width: 50, alignment: .trailing)
+                    .foregroundColor(.secondary)
+            }
+            if selectedMetrics.contains(.precipitation) {
+                Spacer()
+                Text("\(Int(h.precipProb)) %")
+                    .frame(width: 45, alignment: .trailing)
+                    .foregroundColor(.blue)
+            }
+            if selectedMetrics.contains(.uv) {
+                Spacer()
+                Text(String(format: "%.1f", h.uvIndex))
+                    .frame(width: 35, alignment: .trailing)
+                    .foregroundColor(.purple)
+            }
+            if selectedMetrics.contains(.cloud) {
+                Spacer()
+                Text("\(Int(h.cloudCover)) %")
+                    .frame(width: 40, alignment: .trailing)
+                    .foregroundColor(.teal)
+            }
         }
     }
 
@@ -102,19 +147,31 @@ struct SimpleForecastView: View {
     }
 
     private struct ColumnHeaders: View {
+        let metrics: Set<Metric>
+
         var body: some View {
             HStack {
                 Text("Time").frame(width: 55, alignment: .leading)
-                Spacer()
-                Text("Temp").frame(width: 55, alignment: .trailing)
-                Spacer()
-                Text("RH").frame(width: 45, alignment: .trailing)
-                Spacer()
-                Text("Rain").frame(width: 45, alignment: .trailing)
-                Spacer()
-                Text("UV").frame(width: 35, alignment: .trailing)
-                Spacer()
-                Text("Cl").frame(width: 40, alignment: .trailing)
+                if metrics.contains(.temperature) {
+                    Spacer()
+                    Text("Temp").frame(width: 55, alignment: .trailing)
+                }
+                if metrics.contains(.humidity) {
+                    Spacer()
+                    Text("RH").frame(width: 45, alignment: .trailing)
+                }
+                if metrics.contains(.precipitation) {
+                    Spacer()
+                    Text("Rain").frame(width: 45, alignment: .trailing)
+                }
+                if metrics.contains(.uv) {
+                    Spacer()
+                    Text("UV").frame(width: 35, alignment: .trailing)
+                }
+                if metrics.contains(.cloud) {
+                    Spacer()
+                    Text("Cl").frame(width: 40, alignment: .trailing)
+                }
             }
             .font(.caption.bold())
             .foregroundColor(.secondary)
