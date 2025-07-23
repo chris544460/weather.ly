@@ -95,6 +95,8 @@ struct SimpleForecastView: View {
                             Button(action: { toggle(metric) }) {
                                 Text(metric.rawValue)
                                     .font(.caption)
+                                    .lineLimit(1)
+                                    .fixedSize()
                                     .padding(6)
                                     .background(selectedMetrics.contains(metric) ? Color.accentColor.opacity(0.2) : Color.clear)
                                     .cornerRadius(6)
@@ -230,4 +232,3 @@ struct SimpleForecastView: View {
         }
     }
 }
-
