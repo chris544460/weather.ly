@@ -409,8 +409,8 @@ struct SimpleForecastView: View {
             HStack {
                 Text("Time").frame(width: 55, alignment: .leading)
                 if metrics.contains(.temperature)   { Spacer(); Text("Temp").frame(width: 55, alignment: .trailing) }
-                if metrics.contains(.distribution)  { Spacer(); Text("Temperature Dist").frame(width: 100, alignment: .center) }
-                if metrics.contains(.precipDistribution) { Spacer(); Text("Rain Dist").frame(width: 100, alignment: .center) }
+                if metrics.contains(.distribution)  { Spacer(); Text("Temp Dist").frame(width: 100, alignment: .center) }
+                if metrics.contains(.precipDistribution) { Spacer(); Text("Rain Dist (mm").frame(width: 100, alignment: .center) }
                 if metrics.contains(.humidity)      { Spacer(); Text("Humidity").frame(width: 65, alignment: .trailing) }
                 if metrics.contains(.precipitation) { Spacer(); Text("Rain").frame(width: 45, alignment: .trailing) }
                 if metrics.contains(.uv)            { Spacer(); Text("UV Index").frame(width: 55, alignment: .trailing) }
