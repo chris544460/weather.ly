@@ -28,21 +28,21 @@ struct WeatherlyApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if viewModel.advancedMode {
-                NavigationStack(path: $viewModel.navigationPath) {
-                    CityListView()
-                        .environmentObject(viewModel)
-                        .navigationDestination(for: City.self) { city in
-                            CalendarView(city: city)
-                                .environmentObject(viewModel)
-                        }
-                }
-            } else {
-                NavigationStack {
-                    SimpleCityListView()
-                        .environmentObject(viewModel)
+            Group {
+                if viewModel.advancedMode {
+                    NavigationStack(path: $viewModel.navigationPath) {
+                        CityListView()
+                            .navigationDestination(for: City.self) { city in
+                                CalendarView(city: city)
+                            }
+                    }
+                } else {
+                    NavigationStack {
+                        SimpleCityListView()
+                    }
                 }
             }
+            .environmentObject(viewModel)
         }
     }
 }
