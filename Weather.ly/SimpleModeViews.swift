@@ -40,13 +40,14 @@ struct SimpleForecastView: View {
     @State private var hours: [HourlyForecast] = []
     @State private var cancellables = Set<AnyCancellable>()
     @State private var selectedMetrics: Set<Metric> = Set(Metric.allCases)
+    @State private var selectedDayIndex = 0
 
     enum Metric: String, CaseIterable, Identifiable {
-        case temperature = "Temp"
-        case humidity    = "RH"
+        case temperature   = "Temp"
+        case humidity      = "Humidity"
         case precipitation = "Rain"
-        case uv          = "UV"
-        case cloud       = "Cl"
+        case uv            = "UV Index"
+        case cloud         = "Clear %"
 
         var id: String { rawValue }
     }
@@ -67,15 +68,27 @@ struct SimpleForecastView: View {
                                     .background(selectedMetrics.contains(metric) ? Color.accentColor.opacity(0.2) : Color.clear)
                                     .cornerRadius(6)
                             }
+                            .buttonStyle(.bordered)
                         }
                     }
                 }
             }
 
-            ForEach(groupByDay(hours), id: \.0) { day, dayHours in
-                Section(header: Text(day, style: .date)) {
+            let groups = groupByDay(hours)
+            if !groups.isEmpty {
+                Section {
+                    Picker("Date", selection: $selectedDayIndex) {
+                        ForEach(groups.indices, id: \.self) { idx in
+                            Text(groups[idx].0, style: .date).tag(idx)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
+                let day = groups[min(selectedDayIndex, groups.count - 1)]
+                Section(header: Text(day.0, style: .date)) {
                     ColumnHeaders(metrics: selectedMetrics)
-                    ForEach(dayHours) { hour in
+                    ForEach(day.1) { hour in
                         hourRow(hour)
                     }
                 }
@@ -85,7 +98,10 @@ struct SimpleForecastView: View {
         .task {
             viewModel.weatherService.fetchHourly(for: city)
                 .receive(on: DispatchQueue.main)
-                .sink(receiveCompletion: { _ in }, receiveValue: { hours = $0 })
+                .sink(receiveCompletion: { _ in }, receiveValue: { hrs in
+                    hours = hrs
+                    selectedDayIndex = 0
+                })
                 .store(in: &cancellables)
         }
     }
@@ -116,7 +132,7 @@ struct SimpleForecastView: View {
             if selectedMetrics.contains(.humidity) {
                 Spacer()
                 Text("\(Int(h.humidity)) %")
-                    .frame(width: 50, alignment: .trailing)
+                    .frame(width: 65, alignment: .trailing)
                     .foregroundColor(.secondary)
             }
             if selectedMetrics.contains(.precipitation) {
@@ -128,13 +144,13 @@ struct SimpleForecastView: View {
             if selectedMetrics.contains(.uv) {
                 Spacer()
                 Text(String(format: "%.1f", h.uvIndex))
-                    .frame(width: 35, alignment: .trailing)
+                    .frame(width: 55, alignment: .trailing)
                     .foregroundColor(.purple)
             }
             if selectedMetrics.contains(.cloud) {
                 Spacer()
                 Text("\(Int(h.cloudCover)) %")
-                    .frame(width: 40, alignment: .trailing)
+                    .frame(width: 55, alignment: .trailing)
                     .foregroundColor(.teal)
             }
         }
@@ -158,7 +174,7 @@ struct SimpleForecastView: View {
                 }
                 if metrics.contains(.humidity) {
                     Spacer()
-                    Text("RH").frame(width: 45, alignment: .trailing)
+                    Text("Humidity").frame(width: 65, alignment: .trailing)
                 }
                 if metrics.contains(.precipitation) {
                     Spacer()
@@ -166,11 +182,11 @@ struct SimpleForecastView: View {
                 }
                 if metrics.contains(.uv) {
                     Spacer()
-                    Text("UV").frame(width: 35, alignment: .trailing)
+                    Text("UV Index").frame(width: 55, alignment: .trailing)
                 }
                 if metrics.contains(.cloud) {
                     Spacer()
-                    Text("Cl").frame(width: 40, alignment: .trailing)
+                    Text("Clear %").frame(width: 55, alignment: .trailing)
                 }
             }
             .font(.caption.bold())
