@@ -80,6 +80,9 @@ struct SimpleForecastView: View {
     @State private var precipLowerQuartile: [Date: Double] = [:]
     @State private var precipUpperQuartile: [Date: Double] = [:]
 
+    // Info alert
+    @State private var showModelInfo = false
+
     // Metrics picker
     enum Metric: String, CaseIterable, Identifiable {
         case temperature     = "Temp"
@@ -147,6 +150,18 @@ struct SimpleForecastView: View {
             }
         }
         .navigationTitle(city.name)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { showModelInfo = true } label: {
+                    Image(systemName: "info.circle")
+                }
+            }
+        }
+        .alert("Model Info", isPresented: $showModelInfo) {
+            Button("Got it") { }
+        } message: {
+            Text("Temp Dist and Rain Dist use the DWD icon_seamless ensemble model.")
+        }
         .task { fetchData() }
     }
 
