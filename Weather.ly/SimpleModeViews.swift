@@ -76,6 +76,9 @@ struct SimpleForecastView: View {
     @State private var ensembleMedian:        [Date: Double] = [:]
     @State private var ensembleLowerQuartile: [Date: Double] = [:]
     @State private var ensembleUpperQuartile: [Date: Double] = [:]
+    @State private var precipMedian:        [Date: Double] = [:]
+    @State private var precipLowerQuartile: [Date: Double] = [:]
+    @State private var precipUpperQuartile: [Date: Double] = [:]
 
     // Metrics picker
     enum Metric: String, CaseIterable, Identifiable {
@@ -88,6 +91,7 @@ struct SimpleForecastView: View {
         case lowerQuartile   = "Lower Quartile"
         case upperQuartile   = "Upper Quartile"
         case distribution    = "Distribution"
+        case precipDistribution = "Rain Dist"
 
         var id: String { rawValue }
     }
@@ -180,6 +184,27 @@ struct SimpleForecastView: View {
                 print("Failed to fetch ensemble data:", error)
             }
         }
+
+        // ensemble precipitation
+        Task {
+            do {
+                let res = try await viewModel.weatherService
+                    .fetchEnsemblePrecipForecast(for: city,
+                                                 models: ["icon_seamless"])
+
+                if let dict = buildPrecipMedianDict(from: res) {
+                    DispatchQueue.main.async { precipMedian = dict }
+                }
+                if let (lower, upper) = buildPrecipQuartileDicts(from: res) {
+                    DispatchQueue.main.async {
+                        precipLowerQuartile = lower
+                        precipUpperQuartile = upper
+                    }
+                }
+            } catch {
+                print("Failed to fetch ensemble precip data:", error)
+            }
+        }
     }
 
     private func groupByDay(_ hrs: [HourlyForecast])
@@ -245,6 +270,16 @@ struct SimpleForecastView: View {
                     median: ensembleMedian[h.time],
                     upper:  ensembleUpperQuartile[h.time],
                     useCelsius: viewModel.useCelsius
+                )
+                .frame(width: 100, height: 30)
+            }
+
+            if selectedMetrics.contains(.precipDistribution) {
+                Spacer()
+                PrecipDistributionCurve(
+                    lower:  precipLowerQuartile[h.time],
+                    median: precipMedian[h.time],
+                    upper:  precipUpperQuartile[h.time]
                 )
                 .frame(width: 100, height: 30)
             }
@@ -344,6 +379,57 @@ struct SimpleForecastView: View {
         return (lowerQ, upperQ)
     }
 
+    private func buildPrecipMedianDict(from responses: [WeatherApiResponse])
+        -> [Date: Double]? {
+        guard let resp = responses.first,
+              let hourly = resp.hourly else { return nil }
+
+        let memberCount = Int(hourly.variablesCount)
+        let times = hourly.getDateTime(offset: 0)
+        var all: [Date: [Double]] = [:]
+
+        for m in 0..<memberCount {
+            let vals = hourly.variables(at: Int32(m))?.values ?? []
+            for (t, v) in zip(times, vals) where v.isFinite {
+                all[t, default: []].append(Double(v))
+            }
+        }
+
+        var medians: [Date: Double] = [:]
+        for (t, vals) in all {
+            let sorted = vals.sorted()
+            medians[t] = sorted[sorted.count / 2]
+        }
+        return medians
+    }
+
+    private func buildPrecipQuartileDicts(from responses: [WeatherApiResponse])
+        -> (lower: [Date: Double], upper: [Date: Double])? {
+        guard let resp = responses.first,
+              let hourly = resp.hourly else { return nil }
+
+        let count = Int(hourly.variablesCount)
+        let times = hourly.getDateTime(offset: 0)
+        var all: [Date: [Double]] = [:]
+
+        for m in 0..<count {
+            let vals = hourly.variables(at: Int32(m))?.values ?? []
+            for (t, v) in zip(times, vals) where v.isFinite {
+                all[t, default: []].append(Double(v))
+            }
+        }
+
+        var lowerQ: [Date: Double] = [:]
+        var upperQ: [Date: Double] = [:]
+        for (t, vals) in all {
+            let sorted = vals.sorted()
+            guard sorted.count > 1 else { continue }
+            lowerQ[t] = sorted[max(0, sorted.count / 4)]
+            upperQ[t] = sorted[min(sorted.count - 1, 3 * sorted.count / 4)]
+        }
+        return (lowerQ, upperQ)
+    }
+
     // MARK: Column Headers ----------------------------------------------------
 
     private struct ColumnHeaders: View {
@@ -357,6 +443,7 @@ struct SimpleForecastView: View {
                 if metrics.contains(.lowerQuartile) { Spacer(); Text("Lower Q").frame(width: 80, alignment: .trailing) }
                 if metrics.contains(.upperQuartile) { Spacer(); Text("Upper Q").frame(width: 80, alignment: .trailing) }
                 if metrics.contains(.distribution)  { Spacer(); Text("Dist").frame(width: 100, alignment: .center) }
+                if metrics.contains(.precipDistribution) { Spacer(); Text("Rain Dist").frame(width: 100, alignment: .center) }
                 if metrics.contains(.humidity)      { Spacer(); Text("Humidity").frame(width: 65, alignment: .trailing) }
                 if metrics.contains(.precipitation) { Spacer(); Text("Rain").frame(width: 45, alignment: .trailing) }
                 if metrics.contains(.uv)            { Spacer(); Text("UV Index").frame(width: 55, alignment: .trailing) }
@@ -412,6 +499,50 @@ private struct DistributionCurve: View {
                         .position(x: dotX, y: centerY - 10)
 
                     Text("\(Int(convert(upper)))")
+                        .font(.system(size: 8))
+                        .foregroundColor(.secondary)
+                        .position(x: geo.size.width, y: centerY + 12)
+                }
+            }
+        }
+    }
+}
+
+private struct PrecipDistributionCurve: View {
+    let lower: Double?
+    let median: Double?
+    let upper: Double?
+
+    var body: some View {
+        GeometryReader { geo in
+            if let lower, let median, let upper, upper > lower {
+                let centerY = geo.size.height / 2
+                let ratio   = CGFloat((median - lower) / (upper - lower))
+                let dotX    = geo.size.width * ratio
+
+                Path { p in
+                    p.move(to: .init(x: 0, y: centerY))
+                    p.addLine(to: .init(x: geo.size.width, y: centerY))
+                }
+                .stroke(Color.accentColor.opacity(0.6), lineWidth: 2)
+
+                Circle()
+                    .frame(width: 6, height: 6)
+                    .position(x: dotX, y: centerY)
+                    .foregroundColor(.accentColor)
+
+                Group {
+                    Text(String(format: "%.1f", lower))
+                        .font(.system(size: 8))
+                        .foregroundColor(.secondary)
+                        .position(x: 0, y: centerY + 12)
+
+                    Text(String(format: "%.1f", median))
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                        .position(x: dotX, y: centerY - 10)
+
+                    Text(String(format: "%.1f", upper))
                         .font(.system(size: 8))
                         .foregroundColor(.secondary)
                         .position(x: geo.size.width, y: centerY + 12)
