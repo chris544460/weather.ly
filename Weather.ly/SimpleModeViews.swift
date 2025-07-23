@@ -74,6 +74,8 @@ struct SimpleForecastView: View {
     @State private var selectedMetrics: Set<Metric> = [.temperature]
     @State private var selectedDayIndex = 0
     @State private var ensembleMedian: [Date: Double] = [:]
+    @State private var ensembleLowerQuartile: [Date: Double] = [:]
+    @State private var ensembleUpperQuartile: [Date: Double] = [:]
 
     enum Metric: String, CaseIterable, Identifiable {
         case temperature   = "Temp"
@@ -82,6 +84,8 @@ struct SimpleForecastView: View {
         case uv            = "UV Index"
         case cloud         = "Clear %"
         case median        = "Median"
+        case lowerQuartile   = "Lower Quartile"
+        case upperQuartile   = "Upper Quartile"
 
         var id: String { rawValue }
     }
@@ -148,7 +152,15 @@ struct SimpleForecastView: View {
                     let res = try await viewModel.weatherService
                         .fetchEnsembleForecast(for: city, models: ["icon_seamless"])
                     if let dict = buildMedianDict(from: res) {
-                        DispatchQueue.main.async { ensembleMedian = dict }
+                        DispatchQueue.main.async {
+                            ensembleMedian = dict
+                        }
+                    }
+                    if let (lower, upper) = buildQuartileDicts(from: res) {
+                        DispatchQueue.main.async {
+                            ensembleLowerQuartile = lower
+                            ensembleUpperQuartile = upper
+                        }
                     }
                 } catch {
                     print("Failed to fetch ensemble median:", error)
@@ -186,6 +198,22 @@ struct SimpleForecastView: View {
                 Text(median != nil ? "\(Int(shownMedian!))\(unit)" : "--")
                     .frame(width: 70, alignment: .trailing)
                     .foregroundColor(.green)
+            }
+            if selectedMetrics.contains(.lowerQuartile) {
+                Spacer()
+                let lq = ensembleLowerQuartile[h.time]
+                let shownLQ = lq.map { viewModel.useCelsius ? $0 : $0 * 9/5 + 32 }
+                Text(lq != nil ? "\(Int(shownLQ!))\(unit)" : "--")
+                    .frame(width: 80, alignment: .trailing)
+                    .foregroundColor(.orange)
+            }
+            if selectedMetrics.contains(.upperQuartile) {
+                Spacer()
+                let uq = ensembleUpperQuartile[h.time]
+                let shownUQ = uq.map { viewModel.useCelsius ? $0 : $0 * 9/5 + 32 }
+                Text(uq != nil ? "\(Int(shownUQ!))\(unit)" : "--")
+                    .frame(width: 80, alignment: .trailing)
+                    .foregroundColor(.pink)
             }
             if selectedMetrics.contains(.humidity) {
                 Spacer()
@@ -245,6 +273,31 @@ struct SimpleForecastView: View {
         return medians
     }
 
+    private func buildQuartileDicts(from responses: [WeatherApiResponse]) -> (lower: [Date: Double], upper: [Date: Double])? {
+        guard let resp = responses.first, let hourly = resp.hourly else { return nil }
+        let count = Int(hourly.variablesCount)
+        let times = hourly.getDateTime(offset: 0)
+        var allValues: [Date: [Double]] = [:]
+        for m in 0..<count {
+            let values = hourly.variables(at: Int32(m))?.values ?? []
+            for (t, v) in zip(times, values) where v.isFinite {
+                allValues[t, default: []].append(Double(v))
+            }
+        }
+        var lowerQ: [Date: Double] = [:]
+        var upperQ: [Date: Double] = [:]
+        for (t, vals) in allValues {
+            let sorted = vals.sorted()
+            if sorted.count > 1 {
+                let l = sorted[max(0, sorted.count/4)]
+                let u = sorted[min(sorted.count-1, (3*sorted.count)/4)]
+                lowerQ[t] = l
+                upperQ[t] = u
+            }
+        }
+        return (lowerQ, upperQ)
+    }
+
     private struct ColumnHeaders: View {
         let metrics: Set<Metric>
 
@@ -258,6 +311,14 @@ struct SimpleForecastView: View {
                 if metrics.contains(.median) {
                     Spacer()
                     Text("Median").frame(width: 70, alignment: .trailing)
+                }
+                if metrics.contains(.lowerQuartile) {
+                    Spacer()
+                    Text("Lower Q").frame(width: 80, alignment: .trailing)
+                }
+                if metrics.contains(.upperQuartile) {
+                    Spacer()
+                    Text("Upper Q").frame(width: 80, alignment: .trailing)
                 }
                 if metrics.contains(.humidity) {
                     Spacer()
