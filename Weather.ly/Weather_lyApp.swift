@@ -58,7 +58,7 @@ final class AppViewModel: ObservableObject {
     @Published var navigationPath          = NavigationPath()
     /// true = Celsius, false = Fahrenheit
     @Published var useCelsius: Bool =
-        UserDefaults.standard.object(forKey: AppViewModel.unitsKey) as? Bool ?? false {
+        UserDefaults.standard.object(forKey: AppViewModel.unitsKey) as? Bool ?? true {
         didSet { saveUnits() }
     }
     /// Cached good‑windows keyed by city.id
@@ -88,7 +88,7 @@ final class AppViewModel: ObservableObject {
 
     /// User interface mode; false = simple, true = advanced
     @Published var advancedMode: Bool =
-        UserDefaults.standard.object(forKey: AppViewModel.advancedModeKey) as? Bool ?? false {
+        UserDefaults.standard.object(forKey: AppViewModel.advancedModeKey) as? Bool ?? true {
         didSet { saveAdvancedMode() }
     }
     
@@ -853,7 +853,7 @@ struct CityListView: View {
     @State private var showingAdd      = false
     @State private var showingSettings = false
     @State private var todaySelection: DailySelection?
-    @AppStorage("showReasons") private var showReasons = false
+    @AppStorage("showReasons") private var showReasons = true
     @AppStorage("seenCityListHelp") private var seenHelp = false
     @State private var showHelp = false
 
@@ -2023,7 +2023,7 @@ struct AddCityView: View {
 // 5. Settings View – clean rows + modal wheel pickers
 struct SettingsView: View {
     @EnvironmentObject var viewModel: AppViewModel
-    @AppStorage("showReasons") private var showReasons = false
+    @AppStorage("showReasons") private var showReasons = true
     @AppStorage("seenSettingsHelp") private var seenHelp = false
     @State private var showHelp = false
 
@@ -2032,153 +2032,22 @@ struct SettingsView: View {
     @State private var showLeadPicker = false
     enum PickerKind { case minTemp, maxTemp, humidity, uv, cloud, workStart, workEnd }
 
+    private enum TabSelection: Hashable { case general, alerts }
+    @State private var selectedTab: TabSelection = .general
+
     var body: some View {
-        Form {
-            Section("Day Criteria") {
-                // ---- Min Temp Row
-                Button {
-                    activePicker = .minTemp
-                } label: {
-                    HStack {
-                        Text("Min Temp")
-                        Spacer()
-                        Text("\(Int(viewModel.criteria.tempMin))°")
-                            .foregroundColor(.secondary)
-                    }
-                }
+        NavigationStack {
+            TabView(selection: $selectedTab) {
+                generalTab
+                    .tabItem { Label("General", systemImage: "slider.horizontal.3") }
+                    .tag(TabSelection.general)
 
-                // ---- Max Temp Row
-                Button {
-                    activePicker = .maxTemp
-                } label: {
-                    HStack {
-                        Text("Max Temp")
-                        Spacer()
-                        Text("\(Int(viewModel.criteria.tempMax))°")
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                // ---- Max Humidity Row
-                Button {
-                    activePicker = .humidity
-                } label: {
-                    HStack {
-                        Text("Max Humidity %")
-                        Spacer()
-                        Text("\(Int(viewModel.criteria.humidityMax)) %")
-                            .foregroundColor(.secondary)
-                    }
-                }
-                
-                // -- Max UV
-                Button {
-                    activePicker = .uv
-                } label: {
-                    HStack { Text("Max UV Index"); Spacer()
-                             Text("\(Int(viewModel.criteria.uvMax))")
-                                 .foregroundColor(.secondary) }
-                }
-                
-                // -- Cloud cover range
-                Button { activePicker = .cloud } label: {
-                    HStack {
-                        Text("Cloud % Range")
-                        Spacer()
-                        Text("\(Int(viewModel.criteria.cloudCoverMin))–\(Int(viewModel.criteria.cloudCoverMax)) %")
-                            .foregroundColor(.secondary)
-                    }
-                }
-                
-                // Max precipitation probability
-                VStack(alignment: .leading) {
-                    Text("Max Precipitation %")
-                    HStack {
-                        Slider(value: $viewModel.criteria.precipProbMax, in: 0...100, step: 1)
-                        Text("\(Int(viewModel.criteria.precipProbMax))%")
-                            .foregroundColor(.secondary)
-                            .frame(width: 50, alignment: .trailing)
-                    }
-                }
-                .onChange(of: viewModel.criteria.precipProbMax) { _ in
-                    viewModel.saveCriteria()
-                    viewModel.cachedWindows = [:]       // clear cache
-                    viewModel.prefetchWindows()         // re-fetch with new criteria
-                }
-
-//                Toggle("Allow Precipitation",
-//                       isOn: $viewModel.criteria.precipitationAllowed)
-//                    .onChange(of: viewModel.criteria.precipitationAllowed) { _ in
-//                        viewModel.saveCriteria()
-//                    }
-                
-                Section("Work Hours") {
-                    Button {
-                        activePicker = .workStart
-                    } label: {
-                        HStack { Text("Start"); Spacer()
-                            Text(viewModel.workStartHour.map { "\($0):00" } ?? "—")
-                                .foregroundColor(.secondary) }
-                    }
-                    Button {
-                        activePicker = .workEnd
-                    } label: {
-                        HStack { Text("End"); Spacer()
-                            Text(viewModel.workEndHour.map { "\($0):00" } ?? "—")
-                                .foregroundColor(.secondary) }
-                    }
-                }
+                notificationTab
+                    .tabItem { Label("Alerts", systemImage: "bell.badge") }
+                    .tag(TabSelection.alerts)
             }
-
-            Section("Units") {
-                Picker("Temperature Units", selection: $viewModel.useCelsius) {
-                    Text("°C").tag(true)
-                    Text("°F").tag(false)
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: viewModel.useCelsius) { newIsCelsius in
-                    convertCriteria(toCelsius: newIsCelsius)
-                }
-            }
-            
-            Section("Notifications") {
-                Toggle("Enable alerts", isOn: $viewModel.notificationsEnabled)
-                ForEach(viewModel.notifyLeadHours.sorted(), id: \.self) { h in
-                    HStack {
-                        Text(labelForLeadHours(h))
-                        Spacer()
-                    }
-                }
-                .onDelete { indexSet in
-                    viewModel.notifyLeadHours.remove(atOffsets: indexSet)
-                }
-                Button {
-                    showLeadPicker = true
-                } label: {
-                    HStack {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add alert")
-                    }
-                }
-            }
-
-            Section("Timezone") {
-                Picker("Time Zone", selection: $viewModel.selectedTimezone) {
-                    ForEach(TimeZone.knownTimeZoneIdentifiers.sorted(), id: \.self) { tz in
-                        Text(tz).tag(tz)
-                    }
-                }
-                .pickerStyle(.menu)
-            }
-            Section("Cards") {
-                Toggle("Show reasons on cards", isOn: $showReasons)
-            }
-
-            Section("Mode") {
-                Toggle("Advanced Mode", isOn: $viewModel.advancedMode)
-            }
+            .navigationTitle("Settings")
         }
-        .navigationTitle("Settings")
         // ---------- modal sheet ----------
         .sheet(item: $activePicker) { kind in
             if kind == .cloud {
@@ -2197,7 +2066,178 @@ struct SettingsView: View {
         .alert("Settings", isPresented: $showHelp) {
             Button("Got it") { seenHelp = true }
         } message: {
-            Text("Adjust day criteria, units and alerts here.")
+            Text("Use the tabs to adjust general preferences and alert rules.")
+        }
+    }
+
+    private var generalTab: some View {
+        Form {
+            Section("Day Criteria") {
+                Button { activePicker = .minTemp } label: {
+                    HStack {
+                        Text("Min Temp")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.tempMin))°")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Button { activePicker = .maxTemp } label: {
+                    HStack {
+                        Text("Max Temp")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.tempMax))°")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Button { activePicker = .humidity } label: {
+                    HStack {
+                        Text("Max Humidity %")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.humidityMax)) %")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Button { activePicker = .uv } label: {
+                    HStack {
+                        Text("Max UV Index")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.uvMax))")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Button { activePicker = .cloud } label: {
+                    HStack {
+                        Text("Cloud % Range")
+                        Spacer()
+                        Text("\(Int(viewModel.criteria.cloudCoverMin))–\(Int(viewModel.criteria.cloudCoverMax)) %")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading) {
+                    Text("Max Precipitation %")
+                    HStack {
+                        Slider(value: $viewModel.criteria.precipProbMax, in: 0...100, step: 1)
+                        Text("\(Int(viewModel.criteria.precipProbMax))%")
+                            .foregroundColor(.secondary)
+                            .frame(width: 50, alignment: .trailing)
+                    }
+                }
+                .onChange(of: viewModel.criteria.precipProbMax) { _ in
+                    viewModel.saveCriteria()
+                    viewModel.cachedWindows = [:]       // clear cache
+                    viewModel.prefetchWindows()         // re-fetch with new criteria
+                }
+            }
+
+            Section("Work Hours") {
+                Button {
+                    activePicker = .workStart
+                } label: {
+                    HStack {
+                        Text("Start")
+                        Spacer()
+                        Text(viewModel.workStartHour.map { "\($0):00" } ?? "—")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Button {
+                    activePicker = .workEnd
+                } label: {
+                    HStack {
+                        Text("End")
+                        Spacer()
+                        Text(viewModel.workEndHour.map { "\($0):00" } ?? "—")
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            Section("Units") {
+                Picker("Temperature Units", selection: $viewModel.useCelsius) {
+                    Text("°C").tag(true)
+                    Text("°F").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: viewModel.useCelsius) { newIsCelsius in
+                    convertCriteria(toCelsius: newIsCelsius)
+                }
+            }
+
+            Section("Timezone") {
+                Picker("Time Zone", selection: $viewModel.selectedTimezone) {
+                    ForEach(TimeZone.knownTimeZoneIdentifiers.sorted(), id: \.self) { tz in
+                        Text(tz).tag(tz)
+                    }
+                }
+                .pickerStyle(.menu)
+            }
+
+            Section("Cards") {
+                Toggle("Show reasons on cards", isOn: $showReasons)
+            }
+
+            Section("Mode") {
+                Toggle("Advanced Mode", isOn: $viewModel.advancedMode)
+            }
+        }
+    }
+
+    private var notificationTab: some View {
+        Form {
+            Section("Alert Status") {
+                Toggle("Enable alerts", isOn: $viewModel.notificationsEnabled)
+
+                Text(
+                    viewModel.notificationsEnabled
+                    ? "Alerts fire for each upcoming good-weather window in your saved cities."
+                    : "Turn alerts on to get notified before a good-weather window begins."
+                )
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Lead Times") {
+                if viewModel.notifyLeadHours.isEmpty {
+                    Text("Add an alert lead time to decide how far ahead you want a reminder.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                ForEach(viewModel.notifyLeadHours.sorted(), id: \.self) { h in
+                    HStack {
+                        Text(labelForLeadHours(h))
+                        Spacer()
+                    }
+                }
+                .onDelete { indexSet in
+                    viewModel.notifyLeadHours.remove(atOffsets: indexSet)
+                }
+
+                Button {
+                    showLeadPicker = true
+                } label: {
+                    HStack {
+                        Image(systemName: "plus.circle.fill")
+                        Text("Add alert")
+                    }
+                }
+            }
+
+            Section("Alert Rules") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("- Weather.ly scans each saved city for \"good weather\" windows that meet your criteria.")
+                    Text("- For every lead time, the app schedules a single notification if the start time is still ahead.")
+                    Text("- Changes to cities, criteria, or lead times automatically refresh the pending alerts.")
+                }
+                .font(.footnote)
+                .foregroundColor(.secondary)
+            }
         }
     }
 
@@ -2506,5 +2546,3 @@ private struct CloudRangePickerSheet: View {
 extension SettingsView.PickerKind: Identifiable {
     var id: Int { hashValue }
 }
-
-
